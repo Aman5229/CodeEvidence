@@ -1,0 +1,12 @@
+[project]
+name = "codeevidence"
+version = "0.1.0"
+description = "Repository-aware AI code intelligence and review platform"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "pytest>=8,<9",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
