@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: codeevidence-postgres
+    environment:
+      POSTGRES_DB: codeevidence
+      POSTGRES_USER: codeevidence
+      POSTGRES_PASSWORD: codeevidence
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:

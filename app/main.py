@@ -1,2 +1,7 @@
-def app_name():
-    return "CodeEvidence"
+from fastapi import FastAPI
+
+app = FastAPI(title="CodeEvidence")
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
