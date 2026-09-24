@@ -3,9 +3,6 @@ from sqlalchemy import BigInteger, Boolean, DateTime, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
-
-
-
 class Repository(Base):
   __tablename__ = "repositories"
 
