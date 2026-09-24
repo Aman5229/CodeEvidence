@@ -1,0 +1,27 @@
+{
+  "action": "opened",
+  "repository": {
+    "id": 999004,
+    "full_name": "Aman5229/this-repo-does-not-exist",
+    "owner": { "login": "Aman5229" },
+    "default_branch": "main",
+    "html_url": "https://github.com/Aman5229/this-repo-does-not-exist",
+    "private": false,
+    "created_at": "2024-01-01T12:00:00Z",
+    "updated_at": "2024-06-01T09:30:00Z"
+  },
+  "pull_request": {
+    "id": 555002,
+    "number": 1,
+    "title": "feat-01",
+    "body": null,
+    "state": "closed",
+    "user": { "id": 12345, "login": "Aman5229" },
+    "base": { "ref": "main", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    "head": { "ref": "feat-01", "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+    "created_at": "2024-06-01T09:00:00Z",
+    "updated_at": "2024-06-01T09:30:00Z",
+    "closed_at": "2024-06-01T09:30:00Z",
+    "merged_at": "2024-06-01T09:30:00Z"
+  }
+}
