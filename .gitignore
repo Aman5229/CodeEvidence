@@ -21,3 +21,10 @@ htmlcov/
 
 # OS
 .DS_Store
+
+# Allow the example env file
+!.env.example
+
+# Notebooks: keep practice files and Jupyter autosaves out
+notebooks/00_*.ipynb
+.ipynb_checkpoints/
