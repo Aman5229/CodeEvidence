@@ -1,7 +1,19 @@
 from datetime import datetime
-from sqlalchemy import BigInteger, Boolean, Text, DateTime, ForeignKey, Integer, UniqueConstraint
+
+from sqlalchemy import (
+  BigInteger,
+  Boolean,
+  DateTime,
+  ForeignKey,
+  Integer,
+  Text,
+  UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
+
 from app.db.base import Base
+
+
 class PullRequestFile(Base):
   __tablename__ = "pull_request_files"
 

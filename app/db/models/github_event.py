@@ -1,9 +1,12 @@
 from datetime import datetime
-from sqlalchemy import BigInteger, DateTime, String, ForeignKey, Text
+
+from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+
+
 class GitHubEvent(Base):
   __tablename__ = "github_events"
 

@@ -31,8 +31,8 @@ async def github_webhook(
 
   try:
     payload = await request.json()
-  except ValueError:
-    raise HTTPException(status_code=400, detail="Invalid JSON payload")
+  except ValueError as error:
+    raise HTTPException(status_code=400, detail="Invalid JSON payload") from error
 
   status = await process_github_event(
     db,
