@@ -7,15 +7,17 @@ from sqlalchemy.orm import Session
 
 from app.core.pagination import decode_cursor, encode_cursor
 from app.db.models import PullRequest, Repository
-from app.db.models import PullRequest, Repository
 from app.db.session import get_db
 from app.schemas.page import Page
 from app.schemas.pull_request import PullRequestSummary
 
 router = APIRouter(tags=["pull-requests"])
 
-@router.get("/repositories/{repository_id}/pull-requests",response_model=Page[PullRequestSummary])
 
+@router.get(
+  "/repositories/{repository_id}/pull-requests",
+  response_model=Page[PullRequestSummary],
+)
 def list_pull_requests(
   repository_id: int,
   status: Literal["open", "closed"] | None = None,
@@ -28,7 +30,6 @@ def list_pull_requests(
   cursor: str | None = None,
   db: Session = Depends(get_db),
 ):
-
   if db.get(Repository, repository_id) is None:
     raise HTTPException(status_code=404, detail="Repository not found")
 
@@ -37,43 +38,7 @@ def list_pull_requests(
   if status is not None:
     query = query.where(PullRequest.status == status)
 
-  if author is not None:
-    query = query.where(PullRequest.author_login == author)
-
-  if is_bot is not None:
-    looks_like_bot = PullRequest.author_login.endswith("[bot]")
-    if is_bot:
-      query = query.where(looks_like_bot)
-    else:
-      query = query.where(or_(PullRequest.author_login.is_(None), not_(looks_like_bot)))
-
-  if created_after is not None:
-    query = query.where(PullRequest.created_at >= created_after)
-
-  if created_before is not None:
-    query = query.where(PullRequest.created_at < created_before)
-
-  query = query.order_by(PullRequest.created_at.desc(), PullRequest.id.desc())
-
-  if cursor is not None:
-    try:
-      last_created_text, last_id = decode_cursor(cursor)
-      last_created = datetime.fromisoformat(last_created_text)
-    except (ValueError, TypeError) as error:
-      raise HTTPException(status_code=400, detail="Invalid cursor") from error
-    if not isinstance(last_id, int):
-      raise HTTPException(status_code=400, detail="Invalid cursor")
-    query = query.where(
-      tuple_(PullRequest.created_at, PullRequest.id) < tuple_(last_created, last_id)
-    )
-
-  rows = db.scalars(query.limit(limit + 1)).all()
-  items = rows[:limit]
-  next_cursor = None
-  if len(rows) > limit:
-    last = items[-1]
-    next_cursor = encode_cursor([last.created_at.isoformat(), last.id])
-  return {"items": items, "next_cursor": next_cursor}if merged is not None:
+  if merged is not None:
     if merged:
       query = query.where(PullRequest.merged_at.is_not(None))
     else:
@@ -116,4 +81,3 @@ def list_pull_requests(
     last = items[-1]
     next_cursor = encode_cursor([last.created_at.isoformat(), last.id])
   return {"items": items, "next_cursor": next_cursor}
-
