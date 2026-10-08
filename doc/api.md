@@ -44,5 +44,17 @@ and totals (files_changed, additions, deletions, lines_changed).
 The code changes themselves (patches) are left out unless you add ?include_patch=true.
 
 ### 5. GET /repositories/{repository_id}/stats
-Returns: total_prs, merged_prs, merge_rate, bot_prs, bot_share, median_lines_changed, median_hours_to_close.
-(The median is the middle value when you sort all the numbers.)
+Returns: repository_id, total_prs, closed_prs, merged_prs, merge_rate, bot_prs, bot_share,
+median_lines_changed, median_hours_to_close. Returns 404 if the repository id does not exist.
+
+How each number is worked out:
+- closed_prs: PRs whose status is closed. Merged PRs count as closed too, as on GitHub.
+- merge_rate = merged_prs / closed_prs. Open PRs are left out because they are not decided yet.
+- bot_share = bot_prs / total_prs (a bot is an author whose name ends with [bot]).
+- median_lines_changed: the median of (additions + deletions) per PR. A PR with no files counts as 0 lines.
+- median_hours_to_close: the median time from created to closed, using closed PRs only.
+- The median is the middle value when you sort all the numbers. With an even count it is the
+  average of the two middle values (SQL percentile_cont(0.5)), the same as pandas' median().
+- If there is nothing to divide by or nothing to take a median of, the value is null, not 0.
+  For example, a repository with only open PRs has merge_rate null. That means "not known yet",
+  while 0 would claim that nothing was ever merged.
