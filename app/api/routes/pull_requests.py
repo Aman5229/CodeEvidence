@@ -3,13 +3,17 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import not_, or_, select, tuple_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.pagination import decode_cursor, encode_cursor
 from app.db.models import PullRequest, Repository
 from app.db.session import get_db
 from app.schemas.page import Page
-from app.schemas.pull_request import PullRequestSummary
+from app.schemas.pull_request import (
+  PullRequestDetail,
+  PullRequestDetailWithPatch,
+  PullRequestSummary,
+)
 
 router = APIRouter(tags=["pull-requests"])
 
@@ -81,3 +85,29 @@ def list_pull_requests(
     last = items[-1]
     next_cursor = encode_cursor([last.created_at.isoformat(), last.id])
   return {"items": items, "next_cursor": next_cursor}
+
+
+# response_model=None because the shape depends on include_patch: we pick the
+# schema ourselves below. `responses` keeps the full shape visible in /docs.
+@router.get(
+  "/pull-requests/{pull_request_id}",
+  response_model=None,
+  responses={200: {"model": PullRequestDetailWithPatch}},
+)
+def get_pull_request(
+  pull_request_id: int,
+  include_patch: bool = False,
+  db: Session = Depends(get_db),
+) -> PullRequestDetail:
+  # selectinload = Rails preload: one query for the PR, one for all its files.
+  query = (
+    select(PullRequest)
+    .where(PullRequest.id == pull_request_id)
+    .options(selectinload(PullRequest.files))
+  )
+  pull_request = db.scalars(query).one_or_none()
+  if pull_request is None:
+    raise HTTPException(status_code=404, detail="Pull request not found")
+
+  schema = PullRequestDetailWithPatch if include_patch else PullRequestDetail
+  return schema.model_validate(pull_request)

@@ -7,7 +7,6 @@ from sqlalchemy import func, select
 from app.core.config import settings
 from app.db.models import GitHubEvent, PullRequest, PullRequestFile, Repository
 
-
 # ---------- helpers ----------
 
 def repo_payload(repo_id: int = 1001) -> dict:

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
   BigInteger,
@@ -9,9 +10,12 @@ from sqlalchemy import (
   Text,
   UniqueConstraint,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+
+if TYPE_CHECKING:
+  from app.db.models.pull_request_file import PullRequestFile
 
 
 class PullRequest(Base):
@@ -35,5 +39,12 @@ class PullRequest(Base):
   closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
   merged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
   ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+  # lazy="raise" works like Rails strict_loading: reading pr.files without
+  # loading them in the query (selectinload) raises instead of running a hidden query.
+  files: Mapped[list["PullRequestFile"]] = relationship(
+    order_by="PullRequestFile.path",
+    lazy="raise",
+  )
 
   __table_args__ = (UniqueConstraint("repository_id","github_pr_id"),)

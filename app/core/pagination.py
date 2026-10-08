@@ -1,6 +1,7 @@
 import base64
 import json
 
+
 def encode_cursor(values: list) -> str:
   raw = json.dumps(values).encode()
   return base64.urlsafe_b64encode(raw).decode()

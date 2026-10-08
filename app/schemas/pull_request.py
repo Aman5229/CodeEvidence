@@ -1,5 +1,7 @@
 from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, computed_field
+
 
 class PullRequestFileOut(BaseModel):
   model_config = ConfigDict(from_attributes=True)
@@ -10,6 +12,9 @@ class PullRequestFileOut(BaseModel):
   additions: int
   deletions: int
   changes: int
+
+class PullRequestFileWithPatch(PullRequestFileOut):
+  patch: str | None
 
 class PullRequestTotals(BaseModel):
   files_changed: int
@@ -58,3 +63,6 @@ class PullRequestDetail(PullRequestSummary):
       deletions=deletions,
       lines_changed=additions + deletions,
     )
+
+class PullRequestDetailWithPatch(PullRequestDetail):
+  files: list[PullRequestFileWithPatch]
