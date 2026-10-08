@@ -1,10 +1,12 @@
 # CodeEvidence
 
+[![CI](https://github.com/Aman5229/CodeEvidence/actions/workflows/ci.yml/badge.svg)](https://github.com/Aman5229/CodeEvidence/actions/workflows/ci.yml)
+
 A repository-aware, evaluation-driven AI code review platform.
 
-> **Current scope:** CodeEvidence securely receives GitHub pull request webhooks
-> and stores reliable, queryable review input: repositories, pull requests,
-> changed files and the raw events themselves.
+> **Current scope:** CodeEvidence securely receives GitHub pull request webhooks,
+> stores repositories, pull requests, changed files and the raw events, and
+> serves them through a read API with cursor pagination (see [doc/api.md](doc/api.md)).
 
 ---
 
@@ -53,16 +55,20 @@ processed          → 500 (retry via Redeliver)
 ```
 app/
   main.py                      # FastAPI app, registers routers
-  core/                        # settings, time helpers
+  core/                        # settings, time helpers, cursor pagination
   db/                          # engine/session, SQLAlchemy models
-  api/routes/                  # thin HTTP layer: health, webhooks
+  schemas/                     # Pydantic response models (the API's output shapes)
+  api/routes/                  # thin HTTP layer: health, webhooks, repositories, pull requests
   integrations/github/         # the only code that talks to GitHub: signature, API client
   modules/ingestion/           # ingestion logic: event store, repo/PR/file sync, service flow
+doc/api.md                     # API design: endpoints, filters, pagination, errors
 migrations/                    # Alembic schema migrations
 scripts/                       # dev tools and sample payloads (not app code)
 tests/
   unit/                        # pure functions, no database
-  integration/                 # full webhook flow against a test database + fake GitHub
+  integration/                 # API and webhook flow against a test database + fake GitHub
+.github/workflows/ci.yml       # CI: ruff + pytest on a Postgres service
+Dockerfile, docker-compose.yml # container build and local stack
 ```
 
 ## Data model
@@ -80,7 +86,26 @@ Python 3.10+ · FastAPI · SQLAlchemy 2.x · PostgreSQL 16 (Docker) · Alembic �
 
 ---
 
-## Getting started
+## Quickstart (Docker)
+
+The fastest way to run it. Needs only Docker.
+
+```bash
+git clone https://github.com/Aman5229/CodeEvidence.git
+cd CodeEvidence
+cp .env.example .env          # then set GITHUB_WEBHOOK_SECRET and GITHUB_TOKEN
+docker compose up --build
+```
+
+This starts PostgreSQL, waits until it is healthy, applies migrations and
+serves the API on port 8000.
+
+- Health check: `curl http://localhost:8000/health` → `{"status":"ok"}`
+- Interactive API docs: http://localhost:8000/docs
+
+Stop with `Ctrl+C`. `docker compose down -v` also deletes the database volume.
+
+## Local development (without Docker for the app)
 
 ### 1. Requirements
 
@@ -110,6 +135,12 @@ Then fill in `.env`:
 | `GITHUB_WEBHOOK_SECRET` | Shared secret, must match the one set on the GitHub webhook |
 | `GITHUB_TOKEN` | Token used to fetch PR files from the GitHub API |
 | `TEST_DATABASE_URL` | *(optional)* Test database; defaults to `codeevidence_test` on port 5433 |
+
+**Secrets:** `.env` is listed in `.gitignore` and must never be committed. Only
+`.env.example`, with placeholder values, lives in git. CI uses dummy values
+(`ci-secret`, `ci-token`) because tests use a fake GitHub client. If a token is
+ever exposed, revoke it immediately in GitHub → Settings → Developer settings →
+Personal access tokens, then create a new one.
 
 ### 4. Start the database and apply migrations
 
