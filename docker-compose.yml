@@ -6,6 +6,7 @@ services:
       POSTGRES_DB: codeevidence
       POSTGRES_USER: codeevidence
       POSTGRES_PASSWORD: codeevidence
+      REDIS_URL: redis://redis:6379/0
     ports:
       - "5433:5432"
     volumes:
