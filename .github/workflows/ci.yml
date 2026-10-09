@@ -22,11 +22,25 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
     env:
       DATABASE_URL: postgresql+psycopg://codeevidence:codeevidence@localhost:5432/codeevidence_test
       TEST_DATABASE_URL: postgresql+psycopg://codeevidence:codeevidence@localhost:5432/codeevidence_test
       GITHUB_WEBHOOK_SECRET: ci-secret
       GITHUB_TOKEN: ci-token
+      REDIS_URL: redis://localhost:6379/0
+      TEST_REDIS_URL: redis://localhost:6379/15
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

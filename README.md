@@ -103,7 +103,7 @@ Dockerfile, docker-compose.yml # container build and local stack
 
 ## Tech stack
 
-Python 3.10+ · FastAPI · SQLAlchemy 2.x · PostgreSQL 16 (Docker) · Alembic · httpx · pytest
+Python 3.10+ · FastAPI · SQLAlchemy 2.x · PostgreSQL 16 · Redis 7 (Docker) · Alembic · httpx · pytest
 
 ---
 
@@ -118,7 +118,7 @@ cp .env.example .env          # then set GITHUB_WEBHOOK_SECRET and GITHUB_TOKEN
 docker compose up --build
 ```
 
-This starts PostgreSQL, waits until it is healthy, applies migrations and
+This starts PostgreSQL and Redis, waits until both are healthy, applies migrations and
 serves the API on port 8000.
 
 - Health check: `curl http://localhost:8000/health` → `{"status":"ok"}`
@@ -131,7 +131,7 @@ Stop with `Ctrl+C`. `docker compose down -v` also deletes the database volume.
 ### 1. Requirements
 
 - Python 3.10–3.12
-- Docker (for PostgreSQL)
+- Docker (for PostgreSQL and Redis)
 - A GitHub personal access token with read access to pull requests
 
 ### 2. Install
@@ -153,9 +153,11 @@ Then fill in `.env`:
 | Variable | Meaning |
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string |
+| `REDIS_URL` | Redis connection string, e.g. `redis://localhost:6380/0` |
 | `GITHUB_WEBHOOK_SECRET` | Shared secret, must match the one set on the GitHub webhook |
 | `GITHUB_TOKEN` | Token used to fetch PR files from the GitHub API |
 | `TEST_DATABASE_URL` | *(optional)* Test database; defaults to `codeevidence_test` on port 5433 |
+| `TEST_REDIS_URL` | *(optional)* Test Redis; defaults to database 15 on port 6380, so tests never touch the app's cache |
 
 **Secrets:** `.env` is listed in `.gitignore` and must never be committed. Only
 `.env.example`, with placeholder values, lives in git. CI uses dummy values

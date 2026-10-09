@@ -3,6 +3,7 @@ import os
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from redis import Redis
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
@@ -17,6 +18,9 @@ TEST_DATABASE_URL = os.getenv(
   "TEST_DATABASE_URL",
   "postgresql+psycopg://codeevidence:codeevidence@localhost:5433/codeevidence_test",
 )
+
+# Database 15 of the compose Redis, so tests never touch the app's cache (db 0).
+TEST_REDIS_URL = os.getenv("TEST_REDIS_URL", "redis://localhost:6380/15")
 
 
 class FakeGitHubClient:
@@ -78,6 +82,15 @@ def db_session(engine):
   session = sessionmaker(bind=engine)()
   yield session
   session.close()
+
+
+@pytest.fixture
+def redis_client():
+  """An empty Redis test database for each test."""
+  client = Redis.from_url(TEST_REDIS_URL, decode_responses=True)
+  client.flushdb()
+  yield client
+  client.close()
 
 
 @pytest.fixture
