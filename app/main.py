@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 
+from app.api.errors import register_error_handlers
 from app.api.routes.health import router as health_router
 from app.api.routes.pull_requests import router as pull_requests_router
 from app.api.routes.repositories import router as repositories_router

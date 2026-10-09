@@ -4,7 +4,6 @@ from sqlalchemy.orm import Session
 
 from app.core.pagination import decode_cursor, encode_cursor
 from app.db.models import PullRequest, PullRequestFile, Repository
-from app.db.models import Repository
 from app.db.session import get_db
 from app.schemas.page import Page
 from app.schemas.repository import RepositoryOut, RepositoryStats
