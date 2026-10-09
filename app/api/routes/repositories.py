@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.api.errors import error_responses
 from app.core.pagination import decode_cursor, encode_cursor
 from app.db.models import PullRequest, PullRequestFile, Repository
 from app.db.session import get_db
@@ -10,7 +11,7 @@ from app.schemas.repository import RepositoryOut, RepositoryStats
 
 router = APIRouter(prefix= "/repositories", tags=["repositories"])
 
-@router.get("", response_model=Page[RepositoryOut])
+@router.get("", response_model=Page[RepositoryOut], responses=error_responses(400, 422))
 def list_repositories(
   limit: int = Query(default=20, ge=1, le=100),
   cursor: str | None = Query(default=None),
@@ -34,7 +35,9 @@ def list_repositories(
 
 
 
-@router.get("/{repository_id}", response_model=RepositoryOut)
+@router.get(
+  "/{repository_id}", response_model=RepositoryOut, responses=error_responses(404, 422)
+)
 def get_repository(repository_id: int, db: Session = Depends(get_db)):
   repository = db.get(Repository, repository_id)
 
@@ -46,8 +49,16 @@ def get_repository(repository_id: int, db: Session = Depends(get_db)):
 def safe_ratio(part: int, whole: int) -> float | None:
   return part / whole if whole else None
 
-@router.get("/{repository_id}/stats", response_model=RepositoryStats)
+@router.get(
+  "/{repository_id}/stats",
+  response_model=RepositoryStats,
+  responses=error_responses(404, 422),
+)
 def get_repository_stats(repository_id: int, db: Session = Depends(get_db)):
+  """
+  merge_rate = merged / closed (open PRs are excluded). Medians interpolate
+  between the two middle values. Ratios and medians are null when there is no data.
+  """
   if db.get(Repository, repository_id) is None:
     raise HTTPException(status_code=404, detail="Repository not found")
   lines_per_pr = (

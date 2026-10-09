@@ -27,6 +27,27 @@ If processing fails, all partial work is rolled back, the event is kept as `fail
 and the endpoint returns `500` so the delivery can be retried with GitHub's
 **Redeliver** button. A redelivered failed event is processed again.
 
+## API
+
+| Method | Path | Returns |
+|---|---|---|
+| GET | `/repositories` | Stored repositories (cursor-paged) |
+| GET | `/repositories/{id}` | One repository |
+| GET | `/repositories/{id}/stats` | PR counts, merge rate, bot share, median size and time to close |
+| GET | `/repositories/{id}/pull-requests` | PRs, newest first; filters: `status`, `merged`, `author`, `is_bot`, `created_after`, `created_before` |
+| GET | `/pull-requests/{id}` | One PR with changed files and totals (`?include_patch=true` adds the diffs) |
+| POST | `/webhooks/github` | Signed GitHub webhook receiver |
+
+Lists return `{"items": [...], "next_cursor": "..."}`. Send `next_cursor` back as
+`cursor` to get the next page. Errors always look like
+`{"error": {"code": "not_found", "message": "..."}}`.
+
+```bash
+curl "http://localhost:8000/repositories/1/pull-requests?merged=true&limit=5"
+```
+
+Interactive docs are served at `/docs`. The full design is in [doc/api.md](doc/api.md).
+
 ## Flow
 
 ```

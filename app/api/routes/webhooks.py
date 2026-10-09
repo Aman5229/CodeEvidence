@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from app.api.errors import error_responses
 from app.core.config import settings
 from app.db.session import get_db
 from app.integrations.github.client import GitHubClient, get_github_client
@@ -11,7 +12,7 @@ from app.modules.ingestion.service import STATUS_DUPLICATE, process_github_event
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 
-@router.post("/github")
+@router.post("/github", responses=error_responses(400, 401, 422, 500))
 async def github_webhook(
   request: Request,
   x_github_delivery: str | None = Header(default=None),

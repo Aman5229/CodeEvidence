@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import not_, or_, select, tuple_
 from sqlalchemy.orm import Session, selectinload
 
+from app.api.errors import error_responses
 from app.core.pagination import decode_cursor, encode_cursor
 from app.db.models import PullRequest, Repository
 from app.db.session import get_db
@@ -21,6 +22,7 @@ router = APIRouter(tags=["pull-requests"])
 @router.get(
   "/repositories/{repository_id}/pull-requests",
   response_model=Page[PullRequestSummary],
+  responses=error_responses(400, 404, 422),
 )
 def list_pull_requests(
   repository_id: int,
@@ -34,6 +36,10 @@ def list_pull_requests(
   cursor: str | None = None,
   db: Session = Depends(get_db),
 ):
+  """
+  Newest first. Pass `next_cursor` from a response as `cursor` to get the
+  next page; it is null on the last page. All filters can be combined.
+  """
   if db.get(Repository, repository_id) is None:
     raise HTTPException(status_code=404, detail="Repository not found")
 
@@ -92,13 +98,14 @@ def list_pull_requests(
 @router.get(
   "/pull-requests/{pull_request_id}",
   response_model=None,
-  responses={200: {"model": PullRequestDetailWithPatch}},
+  responses={200: {"model": PullRequestDetailWithPatch}, **error_responses(404, 422)},
 )
 def get_pull_request(
   pull_request_id: int,
   include_patch: bool = False,
   db: Session = Depends(get_db),
 ) -> PullRequestDetail:
+  """Patches are left out unless `include_patch=true`."""
   # selectinload = Rails preload: one query for the PR, one for all its files.
   query = (
     select(PullRequest)

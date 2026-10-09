@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class ErrorDetail(BaseModel):
@@ -7,4 +7,10 @@ class ErrorDetail(BaseModel):
 
 
 class ErrorResponse(BaseModel):
+  model_config = ConfigDict(
+    json_schema_extra={
+      "examples": [{"error": {"code": "not_found", "message": "Repository not found"}}]
+    }
+  )
+
   error: ErrorDetail
