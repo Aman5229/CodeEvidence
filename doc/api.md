@@ -12,10 +12,20 @@ We write this plan before the code, so we know what we are building.
   - "next_cursor" is a bookmark. Send it back to get the next page. When it is null, there are no more pages.
 - Options for lists: limit (items per page, default 20, maximum 100) and cursor (the bookmark).
 - When something goes wrong, the answer always has this shape:
-  { "error": { "code": "not_found", "message": "Repository 99 not found" } }
-  - 404 means that id does not exist.
-  - 400 means the request is wrong (for example a broken bookmark).
-  - 422 means a value has the wrong type (for example limit=abc).
+  { "error": { "code": "not_found", "message": "Repository not found" } }
+  - "code" is for programs and never changes. "message" is for people and may be reworded.
+
+  | Status | code               | When |
+  |--------|--------------------|------|
+  | 400    | bad_request        | The request is wrong, e.g. a broken cursor or a missing webhook header |
+  | 401    | unauthorized       | The webhook signature does not match |
+  | 404    | not_found          | That id does not exist, or the URL does not exist |
+  | 405    | method_not_allowed | Wrong HTTP method; the Allow header lists the right one |
+  | 422    | validation_error   | A value has the wrong type or range, e.g. limit=abc or limit=0 |
+  | 500    | internal_error     | A bug on our side. The details are logged and never sent to the client |
+
+  For 422, the message lists every bad value as "where.name: problem", separated by "; ",
+  e.g. "query.limit: Input should be greater than or equal to 1; query.status: Input should be 'open' or 'closed'".
 
 ## Endpoints
 

@@ -7,6 +7,8 @@ from app.api.routes.webhooks import router as webhooks_router
 
 app = FastAPI(title="CodeEvidence")
 
+register_error_handlers(app)
+
 app.include_router(health_router)
 app.include_router(webhooks_router)
 app.include_router(repositories_router)
