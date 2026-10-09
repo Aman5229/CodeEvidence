@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import models  # noqa: F401  (registers all tables on Base.metadata)
 from app.db.base import Base
+from app.db.redis import get_redis
 from app.db.session import get_db
 from app.integrations.github.client import get_github_client
 from app.main import app
@@ -99,13 +100,15 @@ def fake_github():
 
 
 @pytest.fixture
-def client(db_session, fake_github):
-  """An HTTP client for the app, wired to the test DB and the fake GitHub."""
+def client(db_session, redis_client, fake_github):
+  """An HTTP client for the app, wired to the test DB, test Redis and fake GitHub."""
 
   def override_get_db():
     yield db_session
 
   app.dependency_overrides[get_db] = override_get_db
+  # Ids restart at 1 in every test, so a shared cache would leak old responses.
+  app.dependency_overrides[get_redis] = lambda: redis_client
   app.dependency_overrides[get_github_client] = lambda: fake_github
   yield TestClient(app)
   app.dependency_overrides.clear()

@@ -1,7 +1,8 @@
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from redis import Redis
 from sqlalchemy import not_, or_, select, tuple_
 from sqlalchemy.orm import Session, selectinload
 
@@ -10,6 +11,8 @@ from app.core.pagination import decode_cursor, encode_cursor
 from app.db.models import PullRequest, Repository
 from app.db.session import get_db
 from app.schemas.page import Page
+from app.db.redis import get_redis
+
 from app.schemas.pull_request import (
   PullRequestDetail,
   PullRequestDetailWithPatch,
@@ -17,6 +20,8 @@ from app.schemas.pull_request import (
 )
 
 router = APIRouter(tags=["pull-requests"])
+
+PULL_REQUEST_CACHE_TTL_SECONDS = 300
 
 
 @router.get(
@@ -104,8 +109,15 @@ def get_pull_request(
   pull_request_id: int,
   include_patch: bool = False,
   db: Session = Depends(get_db),
-) -> PullRequestDetail:
+  cache: Redis = Depends(get_redis),
+) -> Response:
   """Patches are left out unless `include_patch=true`."""
+  key = f"pull_request:{pull_request_id}:patch={int(include_patch)}"
+
+  cached = cache.get(key)
+  if cached is not None:
+    return Response(content=cached, media_type="application/json")
+
   # selectinload = Rails preload: one query for the PR, one for all its files.
   query = (
     select(PullRequest)
@@ -117,4 +129,6 @@ def get_pull_request(
     raise HTTPException(status_code=404, detail="Pull request not found")
 
   schema = PullRequestDetailWithPatch if include_patch else PullRequestDetail
-  return schema.model_validate(pull_request)
+  body = schema.model_validate(pull_request).model_dump_json()
+  cache.set(key, body, ex=PULL_REQUEST_CACHE_TTL_SECONDS)
+  return Response(content=body, media_type="application/json")

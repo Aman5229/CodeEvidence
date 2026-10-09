@@ -52,6 +52,8 @@ Returns one pull request with more detail: body, base_branch, head_branch, head_
 the list of changed files (path, previous_path, status, additions, deletions, changes),
 and totals (files_changed, additions, deletions, lines_changed).
 The code changes themselves (patches) are left out unless you add ?include_patch=true.
+The answer is cached in Redis for up to 5 minutes (one entry with patches, one without),
+so a change to the PR can take up to 5 minutes to show.
 
 ### 5. GET /repositories/{repository_id}/stats
 Returns: repository_id, total_prs, closed_prs, merged_prs, merge_rate, bot_prs, bot_share,
