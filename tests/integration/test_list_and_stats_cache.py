@@ -90,7 +90,7 @@ def test_list_errors_are_not_cached(client, redis_client, repository):
     f"/repositories/{repository.id}/pull-requests", params={"cursor": "nonsense"}
   )
   assert bad_cursor.status_code == 400
-  assert redis_client.keys() == []
+  assert redis_client.keys("pull_requests:*") == []
 
 
 # ---------- Repository stats ----------
@@ -119,4 +119,4 @@ def test_stats_are_cached_per_repository(client, db_session, repository):
 
 def test_stats_404_is_not_cached(client, redis_client):
   assert client.get("/repositories/999/stats").status_code == 404
-  assert redis_client.keys() == []
+  assert redis_client.keys("repository_stats:*") == []

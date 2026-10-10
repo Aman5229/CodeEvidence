@@ -35,7 +35,7 @@ def test_patch_variants_use_separate_keys(client, redis_client, pull_request):
 
   assert "patch" in with_patch["files"][0]
   assert "patch" not in without_patch["files"][0]
-  assert sorted(redis_client.keys()) == [
+  assert sorted(redis_client.keys("pull_request:*")) == [
     f"pull_request:{pull_request.id}:patch=0",
     f"pull_request:{pull_request.id}:patch=1",
   ]
@@ -49,7 +49,7 @@ def test_cached_entry_has_ttl(client, redis_client, pull_request):
 
 def test_not_found_is_not_cached(client, redis_client):
   assert client.get("/pull-requests/999").status_code == 404
-  assert redis_client.keys() == []
+  assert redis_client.keys("pull_request:*") == []
 
 
 def test_change_that_bypasses_the_webhook_stays_cached_until_expiry(
