@@ -28,8 +28,11 @@ We write this plan before the code, so we know what we are building.
   e.g. "query.limit: Input should be greater than or equal to 1; query.status: Input should be 'open' or 'closed'".
 
 - Caching: the pull request list, a pull request's detail and repository stats are cached
-  in Redis for up to 5 minutes. A change can take up to 5 minutes to show. Each combination
-  of filters, limit and cursor is cached separately, so pages never mix. Errors are not cached.
+  in Redis for up to 5 minutes. Each combination of filters, limit and cursor is cached
+  separately, so pages never mix. Errors are not cached.
+  When a pull_request webhook is processed, the cached detail of that PR and all cached lists
+  and stats of its repository are deleted, so the next read is fresh. Changes that do not
+  come through the webhook (for example the backfill script) can take up to 5 minutes to show.
 
 ## Endpoints
 

@@ -21,3 +21,13 @@ def get_or_set(cache: Redis, key: str, build: Callable[[], str]) -> str:
   value = build()
   cache.set(key, value, ex=CACHE_TTL_SECONDS)
   return value
+
+def invalidate_pull_request(cache: Redis, repository_id: int, pull_request_id: int) -> None:
+  """Delete every cached response that contains this pull request."""
+  keys = [
+    f"pull_request:{pull_request_id}:patch=0",
+    f"pull_request:{pull_request_id}:patch=1",
+    f"repository_stats:{repository_id}",
+  ]
+  keys += cache.scan_iter(match=f"pull_requests:{repository_id}:*")
+  cache.delete(*keys)

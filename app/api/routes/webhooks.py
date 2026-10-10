@@ -1,6 +1,9 @@
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from redis import Redis
+
+from app.db.redis import get_redis
 from app.api.errors import error_responses
 from app.core.config import settings
 from app.db.session import get_db
@@ -20,7 +23,9 @@ async def github_webhook(
   x_hub_signature_256: str | None = Header(default=None),
   db: Session = Depends(get_db),
   github: GitHubClient = Depends(get_github_client),
+  cache: Redis = Depends(get_redis),
 ):
+
   if not x_github_delivery:
     raise HTTPException(status_code=400, detail="Missing X-GitHub-Delivery header")
   if not x_github_event:
@@ -38,6 +43,7 @@ async def github_webhook(
   status = await process_github_event(
     db,
     github,
+    cache,
     delivery_id=x_github_delivery,
     event_type=x_github_event,
     payload=payload,

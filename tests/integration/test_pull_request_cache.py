@@ -52,10 +52,10 @@ def test_not_found_is_not_cached(client, redis_client):
   assert redis_client.keys() == []
 
 
-def test_database_change_is_not_seen_until_the_entry_expires(
+def test_change_that_bypasses_the_webhook_stays_cached_until_expiry(
   client, db_session, redis_client, pull_request
 ):
-  """Known trade-off until webhook invalidation exists: reads can be stale for up to the TTL."""
+  """Only webhooks invalidate. A direct DB write (e.g. backfill) is stale for up to the TTL."""
   url = f"/pull-requests/{pull_request.id}"
   client.get(url)
 

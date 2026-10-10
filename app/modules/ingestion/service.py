@@ -1,6 +1,9 @@
 import logging
 
 from sqlalchemy.orm import Session
+from redis import Redis
+
+from app.core.cache import invalidate_pull_request
 
 from app.integrations.github.client import GitHubClient
 from app.modules.ingestion.event_store import (
@@ -23,6 +26,7 @@ STATUS_DUPLICATE = "duplicate_ignored"
 async def process_github_event(
   db: Session,
   github: GitHubClient,
+  cache: Redis,
   *,
   delivery_id: str,
   event_type: str,
@@ -53,10 +57,9 @@ async def process_github_event(
 
   # 3. Process it. Either ALL derived data is saved, or NONE of it.
   try:
-    repository_id, status = await _ingest(db, github, event_type, payload)
+    repository_id, pull_request_id, status = await _ingest(db, github, event_type, payload)
     mark_event_completed(event, status=status, repository_id=repository_id)
     db.commit()
-    return status
   except Exception as error:
     db.rollback()
     logger.exception("Processing failed for delivery %s", delivery_id)
@@ -64,10 +67,15 @@ async def process_github_event(
     db.commit()
     return STATUS_FAILED
 
+  # 4. Only after the commit: otherwise a reader could refill the cache with old rows.
+  if pull_request_id is not None:
+    invalidate_pull_request(cache, repository_id, pull_request_id)
+  return status
+
 
 async def _ingest(
   db: Session, github: GitHubClient, event_type: str, payload: dict
-) -> tuple[int | None, str]:
+) -> tuple[int | None, int | None, str]:
   """Turn the payload into repository / pull request / file rows (no commit here)."""
   repo_payload = payload.get("repository")
   repo = upsert_repository(db, repo_payload) if repo_payload else None
@@ -76,6 +84,6 @@ async def _ingest(
   if event_type == "pull_request" and repo is not None:
     pr = upsert_pull_request(db, repo, payload["pull_request"])
     await sync_pull_request_files(db, github, repo, pr)
-    return repository_id, STATUS_PROCESSED
+    return repository_id, pr.id, STATUS_PROCESSED
 
-  return repository_id, STATUS_RECEIVED
+  return repository_id, None, STATUS_RECEIVED
