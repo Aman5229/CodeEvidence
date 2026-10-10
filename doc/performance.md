@@ -140,3 +140,61 @@ Migration `9c015e0e8c5f` adds a B-tree index on `pull_requests (repository_id, c
   acceptable at this size, and every index slows every PR insert and update.
 - Not added: an index on `merged_at` (about 31% of PRs are merged, not selective enough to beat
   a scan) and on `pull_request_files.pull_request_id` (already covered by the unique index).
+
+## Load test after the index, and where the time really goes
+
+**Question:** does the list index improve end-to-end latency without the cache?
+
+Same Locust workload as above (50 users, 60 s, cache off), measured 10 Oct 2026.
+
+| Run (cache off) | Requests/s | p50 (ms) | p95 (ms) | p99 (ms) | Failures |
+|---|---|---|---|---|---|
+| Before the index (from the first table) | 78.6 | 310 | 650 | 980 | 0 |
+| After the index, 1 app process | 73.3 | 350 | 760 | 1,100 | 0 |
+| After the index, 4 app processes (experiment) | 129.6 | 47 | 280 | 420 | 0 |
+
+**The index made the list query 36x faster but did not improve end-to-end latency.**
+The difference between the first two rows is within run-to-run noise. Samples taken
+during the run showed why:
+
+| Signal (during load, 1 process) | Value |
+|---|---|
+| App container CPU | about 115% |
+| Postgres connections checked out by the app | 15 of 15 (the whole pool) |
+| ...actually running a query | 2 to 4 |
+| ...`idle in transaction` (held while Python builds the response) | 10 to 13 |
+
+- **The bottleneck was the single app process's CPU.** Python runs one thread at a time
+  per process (the GIL), so one process can do about one core of Python work: ORM objects,
+  Pydantic validation, JSON. Faster queries do not help when requests wait for the CPU.
+- **The connection pool was full, but a bigger pool would not help.** Most of the held
+  connections were idle while Python worked on the response.
+- **The experiment confirmed it.** With 4 uvicorn worker processes on the same machine,
+  still without the cache, p95 fell from 760 to 280 ms and throughput rose from 73 to
+  130 requests/s. Repository stats stays the slowest endpoint (p95 430 ms), because it is
+  limited by the database (see Q4).
+- The number of worker processes is a deployment setting and is left for the deploy
+  milestone. The experiment did not change `docker-compose.yml`. It used
+  `docker compose run ... uvicorn app.main:app --workers 4`.
+
+## Connection pool and timeouts
+
+Settings in `app/db/session.py` and `app/db/redis.py`:
+
+| Setting | Value | Why |
+|---|---|---|
+| `pool_size` | 5 | Connections kept open per app process. The load test showed 2 to 4 connections busy in Postgres at a time, so more would not raise throughput. |
+| `max_overflow` | 10 | Up to 15 per process during bursts. With 4 processes that is 60, within Postgres's `max_connections` of 100, which leaves room for workers and migrations. |
+| `pool_timeout` | 10 s (default 30 s) | A request that cannot get a connection fails after 10 s instead of hanging for 30 s. |
+| `pool_pre_ping` | on | Each connection is checked before use, so the first requests after a Postgres restart do not fail on dead connections. |
+| `connect_timeout` | 5 s | Opening a connection to an unreachable database fails fast. |
+| `statement_timeout` | 10 s | Postgres cancels any query running longer than 10 s, so one runaway query cannot hold a connection forever. The slowest query today (stats) takes about 0.15 s. |
+| Redis `socket_connect_timeout`, `socket_timeout` | 2 s | Without them, a stuck Redis would block requests with no limit. |
+
+`tests/integration/test_connection_settings.py` checks that these settings reach the
+real connections.
+
+Each request holds its connection for the whole request, including the time Python spends
+building the response, because the session lives as long as the request. That is why
+connections show `idle in transaction`. It is fine at this size. If the pool becomes the
+limit later, the fix is to close the session before serializing, not to enlarge the pool.
