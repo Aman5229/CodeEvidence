@@ -27,6 +27,10 @@ We write this plan before the code, so we know what we are building.
   For 422, the message lists every bad value as "where.name: problem", separated by "; ",
   e.g. "query.limit: Input should be greater than or equal to 1; query.status: Input should be 'open' or 'closed'".
 
+- Caching: the pull request list, a pull request's detail and repository stats are cached
+  in Redis for up to 5 minutes. A change can take up to 5 minutes to show. Each combination
+  of filters, limit and cursor is cached separately, so pages never mix. Errors are not cached.
+
 ## Endpoints
 
 ### 1. GET /repositories
@@ -52,8 +56,6 @@ Returns one pull request with more detail: body, base_branch, head_branch, head_
 the list of changed files (path, previous_path, status, additions, deletions, changes),
 and totals (files_changed, additions, deletions, lines_changed).
 The code changes themselves (patches) are left out unless you add ?include_patch=true.
-The answer is cached in Redis for up to 5 minutes (one entry with patches, one without),
-so a change to the PR can take up to 5 minutes to show.
 
 ### 5. GET /repositories/{repository_id}/stats
 Returns: repository_id, total_prs, closed_prs, merged_prs, merge_rate, bot_prs, bot_share,

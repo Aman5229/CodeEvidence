@@ -1,13 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from redis import Redis
 from app.api.errors import error_responses
 from app.core.pagination import decode_cursor, encode_cursor
 from app.db.models import PullRequest, PullRequestFile, Repository
 from app.db.session import get_db
 from app.schemas.page import Page
 from app.schemas.repository import RepositoryOut, RepositoryStats
+
+from app.core.cache import get_or_set
+from app.db.redis import get_redis
 
 router = APIRouter(prefix= "/repositories", tags=["repositories"])
 
@@ -54,58 +58,71 @@ def safe_ratio(part: int, whole: int) -> float | None:
   response_model=RepositoryStats,
   responses=error_responses(404, 422),
 )
-def get_repository_stats(repository_id: int, db: Session = Depends(get_db)):
+def get_repository_stats(
+  repository_id: int,
+  db: Session = Depends(get_db),
+  cache: Redis = Depends(get_redis),
+) -> Response:
   """
   merge_rate = merged / closed (open PRs are excluded). Medians interpolate
   between the two middle values. Ratios and medians are null when there is no data.
   """
-  if db.get(Repository, repository_id) is None:
-    raise HTTPException(status_code=404, detail="Repository not found")
-  lines_per_pr = (
-    select(
-      PullRequest.id.label("pull_request_id"),
-      func.coalesce(
-        func.sum(PullRequestFile.additions + PullRequestFile.deletions), 0
-      ).label("lines_changed"),
+  key = f"repository_stats:{repository_id}"
+
+  def build() -> str:
+    if db.get(Repository, repository_id) is None:
+      raise HTTPException(status_code=404, detail="Repository not found")
+
+    # Step 1: lines changed per PR. LEFT JOIN keeps PRs with no files (0 lines).
+    lines_per_pr = (
+      select(
+        PullRequest.id.label("pull_request_id"),
+        func.coalesce(
+          func.sum(PullRequestFile.additions + PullRequestFile.deletions), 0
+        ).label("lines_changed"),
+      )
+      .outerjoin(PullRequestFile, PullRequestFile.pull_request_id == PullRequest.id)
+      .where(PullRequest.repository_id == repository_id)
+      .group_by(PullRequest.id)
+      .subquery()
     )
-    .outerjoin(PullRequestFile, PullRequestFile.pull_request_id == PullRequest.id)
-    .where(PullRequest.repository_id == repository_id)
-    .group_by(PullRequest.id)
-    .subquery()
-  )
 
-  # Step 2: every number in one query. COUNT(*) FILTER (WHERE ...) counts a subset.
-  is_bot = PullRequest.author_login.endswith("[bot]")
-  hours_to_close = func.extract("epoch", PullRequest.closed_at - PullRequest.created_at) / 3600
-
-  query = (
-    select(
-      func.count().label("total_prs"),
-      func.count().filter(PullRequest.status == "closed").label("closed_prs"),
-      func.count().filter(PullRequest.merged_at.is_not(None)).label("merged_prs"),
-      func.count().filter(is_bot).label("bot_prs"),
-      func.percentile_cont(0.5)
-        .within_group(lines_per_pr.c.lines_changed)
-        .label("median_lines_changed"),
-      func.percentile_cont(0.5)
-        .within_group(hours_to_close)
-        .label("median_hours_to_close"),
+    # Step 2: every number in one query. COUNT(*) FILTER (WHERE ...) counts a subset.
+    is_bot = PullRequest.author_login.endswith("[bot]")
+    hours_to_close = (
+      func.extract("epoch", PullRequest.closed_at - PullRequest.created_at) / 3600
     )
-    .select_from(PullRequest)
-    .join(lines_per_pr, lines_per_pr.c.pull_request_id == PullRequest.id)
-    .where(PullRequest.repository_id == repository_id)
-  )
 
-  row = db.execute(query).one()
+    query = (
+      select(
+        func.count().label("total_prs"),
+        func.count().filter(PullRequest.status == "closed").label("closed_prs"),
+        func.count().filter(PullRequest.merged_at.is_not(None)).label("merged_prs"),
+        func.count().filter(is_bot).label("bot_prs"),
+        func.percentile_cont(0.5)
+          .within_group(lines_per_pr.c.lines_changed)
+          .label("median_lines_changed"),
+        func.percentile_cont(0.5)
+          .within_group(hours_to_close)
+          .label("median_hours_to_close"),
+      )
+      .select_from(PullRequest)
+      .join(lines_per_pr, lines_per_pr.c.pull_request_id == PullRequest.id)
+      .where(PullRequest.repository_id == repository_id)
+    )
+    row = db.execute(query).one()
 
-  return RepositoryStats(
-    repository_id=repository_id,
-    total_prs=row.total_prs,
-    closed_prs=row.closed_prs,
-    merged_prs=row.merged_prs,
-    merge_rate=safe_ratio(row.merged_prs, row.closed_prs),
-    bot_prs=row.bot_prs,
-    bot_share=safe_ratio(row.bot_prs, row.total_prs),
-    median_lines_changed=row.median_lines_changed,
-    median_hours_to_close=row.median_hours_to_close,
-  )
+    stats = RepositoryStats(
+      repository_id=repository_id,
+      total_prs=row.total_prs,
+      closed_prs=row.closed_prs,
+      merged_prs=row.merged_prs,
+      merge_rate=safe_ratio(row.merged_prs, row.closed_prs),
+      bot_prs=row.bot_prs,
+      bot_share=safe_ratio(row.bot_prs, row.total_prs),
+      median_lines_changed=row.median_lines_changed,
+      median_hours_to_close=row.median_hours_to_close,
+    )
+    return stats.model_dump_json()
+
+  return Response(content=get_or_set(cache, key, build), media_type="application/json")
