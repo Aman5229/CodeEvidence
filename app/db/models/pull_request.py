@@ -5,6 +5,7 @@ from sqlalchemy import (
   BigInteger,
   DateTime,
   ForeignKey,
+  Index,
   Integer,
   String,
   Text,
@@ -47,4 +48,8 @@ class PullRequest(Base):
     lazy="raise",
   )
 
-  __table_args__ = (UniqueConstraint("repository_id","github_pr_id"),)
+  __table_args__ = (
+    UniqueConstraint("repository_id","github_pr_id"),
+    # Serves the PR list: a repository's PRs newest first, with keyset paging on (created_at, id).
+    Index("ix_pull_requests_repository_id_created_at_id", "repository_id", "created_at", "id"),
+  )
