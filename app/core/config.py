@@ -6,6 +6,7 @@ class Settings(BaseSettings):
   redis_url: str
   github_webhook_secret: str
   github_token: str
+  cache_enabled: bool = True
   model_config = SettingsConfigDict(env_file=".env")
 
 

@@ -35,6 +35,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET}
       GITHUB_TOKEN: ${GITHUB_TOKEN}
+      CACHE_ENABLED: ${CACHE_ENABLED:-true}
     depends_on:
       postgres:
         condition: service_healthy

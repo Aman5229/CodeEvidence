@@ -8,6 +8,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.core.cache import HITS_KEY, MISSES_KEY, get_or_set
+from app.core.config import settings
 
 CALLERS = 20
 
@@ -58,6 +59,21 @@ def test_failed_build_releases_lock_and_waiters_do_not_hang(redis_client):
   assert time.monotonic() - started < 2  # waiters stop as soon as the lock is gone
   assert redis_client.exists("lock:stats:1") == 0
   assert redis_client.exists("stats:1") == 0
+
+
+def test_disabled_cache_always_builds_and_touches_nothing(redis_client, monkeypatch):
+  monkeypatch.setattr(settings, "cache_enabled", False)
+  calls = []
+
+  def build():
+    calls.append(1)
+    return "x"
+
+  get_or_set(redis_client, "stats:1", build)
+  get_or_set(redis_client, "stats:1", build)
+
+  assert len(calls) == 2
+  assert redis_client.keys() == []  # no value, no lock, no counters
 
 
 def test_hits_and_misses_are_counted(redis_client):

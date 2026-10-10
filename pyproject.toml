@@ -21,6 +21,10 @@ dev = [
     "ruff>=0.8,<1",
 ]
 
+loadtest = [
+    "locust>=2.40,<3",
+]
+
 analysis = [
     "pandas>=2.2,<3",
     "matplotlib>=3.8,<4",

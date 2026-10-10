@@ -2,6 +2,7 @@ import hashlib
 import json
 import time
 from collections.abc import Callable
+from app.core.config import settings
 
 from redis import Redis
 
@@ -24,6 +25,8 @@ def params_hash(params: dict) -> str:
 
 def get_or_set(cache: Redis, key: str, build: Callable[[], str]) -> str:
   """Cache-aside with stampede protection: on a miss, only one caller builds."""
+  if not settings.cache_enabled:
+    return build()
   cached = cache.get(key)
   if cached is not None:
     cache.incr(HITS_KEY)
