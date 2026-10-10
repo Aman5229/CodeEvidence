@@ -76,20 +76,22 @@ processed          → 500 (retry via Redeliver)
 ```
 app/
   main.py                      # FastAPI app, registers routers
+  worker.py                    # Celery app: broker settings (late acks, prefetch 1)
+  jobs.py                      # background jobs run by the worker
   core/                        # settings, time helpers, cursor pagination
   db/                          # engine/session, SQLAlchemy models
   schemas/                     # Pydantic response models (the API's output shapes)
   api/routes/                  # thin HTTP layer: health, webhooks, repositories, pull requests
   integrations/github/         # the only code that talks to GitHub: signature, API client
   modules/ingestion/           # ingestion logic: event store, repo/PR/file sync, service flow
-doc/api.md                     # API design: endpoints, filters, pagination, errors
+doc/                           # API design, performance measurements, decision log
 migrations/                    # Alembic schema migrations
 scripts/                       # dev tools and sample payloads (not app code)
 tests/
   unit/                        # pure functions, no database
   integration/                 # API and webhook flow against a test database + fake GitHub
 .github/workflows/ci.yml       # CI: ruff + pytest on a Postgres service
-Dockerfile, docker-compose.yml # container build and local stack
+Dockerfile, docker-compose.yml # container build and local stack (app, worker, Postgres, Redis)
 ```
 
 ## Data model
@@ -103,7 +105,7 @@ Dockerfile, docker-compose.yml # container build and local stack
 
 ## Tech stack
 
-Python 3.10+ · FastAPI · SQLAlchemy 2.x · PostgreSQL 16 · Redis 7 (Docker) · Alembic · httpx · pytest
+Python 3.10+ · FastAPI · SQLAlchemy 2.x · PostgreSQL 16 · Redis 7 (Docker) · Celery · Alembic · httpx · pytest
 
 ---
 
@@ -118,8 +120,11 @@ cp .env.example .env          # then set GITHUB_WEBHOOK_SECRET and GITHUB_TOKEN
 docker compose up --build
 ```
 
-This starts PostgreSQL and Redis, waits until both are healthy, applies migrations and
-serves the API on port 8000.
+This starts PostgreSQL and Redis, waits until both are healthy, applies migrations,
+serves the API on port 8000 and starts a Celery worker for background jobs.
+
+- Worker check: `docker compose exec worker celery -A app.worker call app.jobs.ping`, then
+  `docker compose logs worker --tail 5` shows `Task app.jobs.ping[...] succeeded ... 'pong'`
 
 - Health check: `curl http://localhost:8000/health` → `{"status":"ok"}`
 - Interactive API docs: http://localhost:8000/docs
@@ -153,7 +158,8 @@ Then fill in `.env`:
 | Variable | Meaning |
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string |
-| `REDIS_URL` | Redis connection string, e.g. `redis://localhost:6380/0` |
+| `REDIS_URL` | Redis connection string for the cache, e.g. `redis://localhost:6380/0` |
+| `CELERY_BROKER_URL` | Redis for the job queue, a separate database: `redis://localhost:6380/1` |
 | `GITHUB_WEBHOOK_SECRET` | Shared secret, must match the one set on the GitHub webhook |
 | `GITHUB_TOKEN` | Token used to fetch PR files from the GitHub API |
 | `TEST_DATABASE_URL` | *(optional)* Test database; defaults to `codeevidence_test` on port 5433 |

@@ -32,3 +32,38 @@ The index is ascending; Postgres reads it backward for the newest-first order.
 - Repository stats remains a sequential scan over all file rows. An index cannot fix it;
   storing each PR's line totals on the PR row at ingest could. That was deferred, and the
   Redis cache covers it for now.
+
+## Job queue: Celery with Redis (10 Oct 2026)
+
+**Context.** The webhook does all its work inside the HTTP request: store the event, call
+the GitHub API for the PR's files, write everything, then answer. GitHub waits only 10 s
+for a response, a GitHub outage becomes our outage, and later work (repository indexing,
+embeddings, LLM review) takes minutes. The work has to move to a background worker.
+
+**Options considered** (checked on PyPI in October 2026)
+
+| | Celery | RQ | Dramatiq | ARQ |
+|---|---|---|---|---|
+| Latest release | 5.6.3 (Mar 2026) | 2.12.0 (Aug 2026) | 2.2.1 (Sep 2026) | 0.28.0 (Apr 2026), maintenance-only mode |
+| Job style | sync | sync | sync | async |
+| Brokers | Redis, RabbitMQ, others | Redis | Redis, RabbitMQ | Redis |
+| Complexity | high | low | medium | low |
+| Seen in job posts | very often | sometimes | rarely | rarely |
+
+**Choice: Celery, with Redis as the broker.**
+
+**Why**
+- It is the most widely used Python job queue and is actively maintained. ARQ, the earlier
+  favourite because it is async, is in maintenance-only mode.
+- At-least-once delivery is available: with `task_acks_late`, a job is acknowledged only
+  after it finishes, so a worker crash makes it run again instead of losing it.
+- Redis is already in the stack, so no new service is needed.
+
+**Trade-offs**
+- More configuration than RQ, and settings with sharp edges (late acks, Redis visibility
+  timeout, prefork worker processes).
+- Celery jobs are sync, while the ingestion code is async. Each job calls it with
+  `asyncio.run(...)`, which costs little per job.
+- `kombu`, Celery's messaging library, requires `redis < 6.5`, so the Redis client moves
+  from 8.x to 6.x. The app only uses basic commands, which 6.x supports.
+- At-least-once means a job can run twice. Jobs must be idempotent, which is planned.
