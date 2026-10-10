@@ -229,6 +229,21 @@ GitHub must be able to reach your machine, so expose port 8000 with a tunnel
 - **Secret:** the same value as `GITHUB_WEBHOOK_SECRET`
 - **Events:** *Pull requests*
 
+## Synthetic data for load testing
+
+The real dataset (about 300 PRs) is too small for meaningful performance numbers,
+so a script generates synthetic data with realistic shapes: right-skewed PR sizes,
+about 10% bot authors, 10% open PRs and about 35% of closed PRs merged.
+
+```bash
+python -m scripts.seed_synthetic_data                              # 10 repos x 10,000 PRs (~300k files)
+python -m scripts.seed_synthetic_data --repos 2 --prs-per-repo 500
+```
+
+Synthetic repositories are owned by `synthetic`. Each run deletes the previous
+synthetic rows first and uses a fixed random seed, so the data is identical on
+every run. Real repositories are never touched.
+
 ---
 
 ## Known limitations
