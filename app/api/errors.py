@@ -29,6 +29,7 @@ ERROR_DESCRIPTIONS = {
   400: "Bad request, e.g. an invalid cursor or a missing header",
   401: "The webhook signature does not match",
   404: "The resource does not exist",
+  409: "The request conflicts with the current state, e.g. retrying a job that has not failed",
   422: "A parameter has the wrong type or value",
   500: "Unexpected server error",
   503: "A dependency is unavailable; retry later",

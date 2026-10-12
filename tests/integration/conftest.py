@@ -12,7 +12,6 @@ from app.db.base import Base
 from app.db.redis import get_redis
 from app.db.session import get_db
 from app.integrations.github.client import get_github_client
-from app.jobs import get_event_queue
 from app.main import app
 
 # A SEPARATE database, so tests never touch your real data.
@@ -49,15 +48,18 @@ class FakeGitHubClient:
         "sha": "def456",
       },
     ]
-    self.should_fail = False
+    self.should_fail = False  # fail every call
+    self.fail_times = 0  # or fail only the next N calls
+    self.status_code = 503
     self.calls = []
 
   async def get_pull_request_files(self, repo_full_name: str, pr_number: int) -> list[dict]:
     self.calls.append((repo_full_name, pr_number))
-    if self.should_fail:
+    if self.should_fail or self.fail_times > 0:
+      self.fail_times = max(0, self.fail_times - 1)
       request = httpx.Request("GET", "https://api.github.com/fake")
-      response = httpx.Response(503, request=request)
-      raise httpx.HTTPStatusError("503 Service Unavailable", request=request, response=response)
+      response = httpx.Response(self.status_code, request=request)
+      raise httpx.HTTPStatusError(f"{self.status_code} error", request=request, response=response)
     return self.files
 
 
@@ -77,7 +79,7 @@ def db_session(engine):
   with engine.begin() as connection:
     connection.execute(
       text(
-        "TRUNCATE github_events, pull_request_files, pull_requests, repositories "
+        "TRUNCATE job_runs, github_events, pull_request_files, pull_requests, repositories "
         "RESTART IDENTITY CASCADE"
       )
     )
@@ -100,65 +102,66 @@ def fake_github():
   return FakeGitHubClient()
 
 
-class FakeQueue:
-  """Stands in for Celery in the webhook: records which events were queued."""
+class FakeBroker:
+  """Stands in for Celery + Redis: records dispatched jobs instead of sending them."""
 
   def __init__(self) -> None:
-    self.event_ids: list[int] = []
+    self.jobs: list[tuple[str, int]] = []  # (job_type, job_id), in dispatch order
     self.should_fail = False
 
-  def __call__(self, event_id: int) -> None:
+  def dispatch(self, task, job_id: int) -> None:
     if self.should_fail:
       raise ConnectionError("Redis is unreachable")
-    self.event_ids.append(event_id)
+    self.jobs.append((task.name.rsplit(".", 1)[-1], job_id))
+
+  def job_ids(self, job_type: str) -> list[int]:
+    return [job_id for kind, job_id in self.jobs if kind == job_type]
 
 
 @pytest.fixture
-def fake_queue():
-  return FakeQueue()
+def fake_broker(monkeypatch):
+  import app.jobs as jobs
+
+  broker = FakeBroker()
+  monkeypatch.setattr(jobs, "dispatch", broker.dispatch)
+  return broker
 
 
 @pytest.fixture
-def worker(monkeypatch, db_session, redis_client, fake_github, fake_queue):
-  """Runs queued jobs in-process, against the test DB, test Redis and fake GitHub.
+def worker(monkeypatch, db_session, redis_client, fake_github, fake_broker):
+  """Runs dispatched jobs in-process, against the test DB, test Redis and fake GitHub.
 
-  Like the real worker, a failing job is recorded and does not stop the others.
+  Like the real worker, a failing job is recorded and does not stop the others. A job
+  that asks for a retry is not run again here; test retries with task.apply() instead.
   """
   from contextlib import nullcontext
 
   import app.jobs as jobs
 
-  pending_files: list[int] = []
   monkeypatch.setattr(jobs, "SessionLocal", lambda: nullcontext(db_session))
   monkeypatch.setattr(jobs, "redis_client", redis_client)
   monkeypatch.setattr(jobs, "get_github_client", lambda: fake_github)
-  monkeypatch.setattr(jobs, "enqueue_sync_pr_files", pending_files.append)
 
   class Worker:
     def __init__(self) -> None:
       self.failures: list[Exception] = []
 
     def run(self) -> None:
-      """Process everything queued so far: events first, then the file syncs they queue."""
-      while fake_queue.event_ids or pending_files:
-        while fake_queue.event_ids:
-          self._attempt(jobs.process_event, {"event_id": fake_queue.event_ids.pop(0)})
-        while pending_files:
-          self._attempt(jobs.sync_pr_files, {"pull_request_id": pending_files.pop(0)})
-
-    def _attempt(self, job, payload) -> None:
-      try:
-        job(payload)
-      except Exception as error:
-        db_session.rollback()
-        self.failures.append(error)
+      """Run everything dispatched so far, including the jobs those jobs dispatch."""
+      while fake_broker.jobs:
+        job_type, job_id = fake_broker.jobs.pop(0)
+        try:
+          jobs.JOB_TASKS[job_type]({"job_id": job_id})
+        except Exception as error:
+          db_session.rollback()
+          self.failures.append(error)
 
   return Worker()
 
 
 @pytest.fixture
-def client(db_session, redis_client, fake_github, fake_queue):
-  """An HTTP client for the app, wired to the test DB, test Redis and fake GitHub."""
+def client(db_session, redis_client, fake_github, fake_broker):
+  """An HTTP client for the app, wired to the test DB, test Redis, fake GitHub and fake broker."""
 
   def override_get_db():
     yield db_session
@@ -167,6 +170,5 @@ def client(db_session, redis_client, fake_github, fake_queue):
   # Ids restart at 1 in every test, so a shared cache would leak old responses.
   app.dependency_overrides[get_redis] = lambda: redis_client
   app.dependency_overrides[get_github_client] = lambda: fake_github
-  app.dependency_overrides[get_event_queue] = lambda: fake_queue
   yield TestClient(app)
   app.dependency_overrides.clear()

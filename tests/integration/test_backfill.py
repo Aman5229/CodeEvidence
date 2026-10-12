@@ -4,7 +4,7 @@ import httpx
 import pytest
 from sqlalchemy import func, select
 
-from app.db.models import PullRequest, PullRequestFile, Repository
+from app.db.models import JobRun, PullRequest, PullRequestFile, Repository
 from app.modules.ingestion.backfill import backfill_repository
 
 
@@ -67,40 +67,71 @@ def run(db_session, github, max_prs: int = 10):
   return asyncio.run(backfill_repository(db_session, github, "octo/demo", max_prs))
 
 
-def test_backfill_stores_repository_prs_and_files(db_session):
-  result = run(db_session, FakeBackfillGitHub(pr_count=3))
+@pytest.fixture
+def backfill_worker(monkeypatch, worker):
+  """The in-process worker, fetching files from the backfill's fake GitHub."""
+  import app.jobs as jobs
 
-  assert (result.stored, result.skipped, result.failed) == (3, 0, 0)
+  def use(github):
+    monkeypatch.setattr(jobs, "get_github_client", lambda: github)
+    return worker
+
+  return use
+
+
+def test_backfill_stores_prs_and_queues_one_file_sync_each(db_session, fake_broker):
+  github = FakeBackfillGitHub(pr_count=3)
+
+  result = run(db_session, github)
+
+  assert (result.queued, result.skipped, result.failed) == (3, 0, 0)
   assert count(db_session, Repository) == 1
   assert count(db_session, PullRequest) == 3
+  assert github.file_calls == 0  # no file fetching in the backfill itself
+  assert len(fake_broker.job_ids("sync_pr_files")) == 3
+  assert all(job.event_id is None for job in db_session.scalars(select(JobRun)))
+
+
+def test_workers_fetch_the_files(db_session, fake_broker, backfill_worker):
+  github = FakeBackfillGitHub(pr_count=3)
+  run(db_session, github)
+
+  backfill_worker(github).run()
+
   assert count(db_session, PullRequestFile) == 3
+  assert github.file_calls == 3
 
 
-def test_rerun_skips_prs_already_stored(db_session):
+def test_rerun_skips_prs_already_stored(db_session, fake_broker):
   github = FakeBackfillGitHub(pr_count=3)
   run(db_session, github)
 
   result = run(db_session, github)
 
-  assert (result.stored, result.skipped) == (0, 3)
-  assert github.file_calls == 3  # files were NOT fetched again
+  assert (result.queued, result.skipped) == (0, 3)
+  assert len(fake_broker.job_ids("sync_pr_files")) == 3  # nothing queued again
 
 
-def test_one_failing_pr_does_not_stop_the_others(db_session):
+def test_one_pr_whose_files_fail_does_not_stop_the_others(db_session, fake_broker,
+                                                          backfill_worker):
   github = FakeBackfillGitHub(pr_count=3)
-  github.failing_pr_numbers = {2}
+  github.failing_pr_numbers = {2}  # GitHub returns 500 for PR 2
+  run(db_session, github)
+
+  worker = backfill_worker(github)
+  worker.run()
+
+  assert count(db_session, PullRequest) == 3
+  assert count(db_session, PullRequestFile) == 2
+  assert len(worker.failures) == 1
+  statuses = sorted(db_session.scalars(select(JobRun.status)).all())
+  assert statuses == ["retrying", "succeeded", "succeeded"]  # a 500 is retried by Celery
+
+
+def test_queueing_failure_is_counted_and_does_not_stop_the_others(db_session, fake_broker):
+  github = FakeBackfillGitHub(pr_count=3)
+  fake_broker.should_fail = True
 
   result = run(db_session, github)
 
-  assert (result.stored, result.failed) == (2, 1)
-  assert count(db_session, PullRequest) == 2  # the failed PR was rolled back
-
-
-def test_rate_limit_stops_the_backfill(db_session):
-  github = FakeBackfillGitHub(pr_count=3)
-  github.rate_limited = True
-
-  with pytest.raises(httpx.HTTPStatusError):
-    run(db_session, github)
-
-  assert count(db_session, PullRequest) == 0
+  assert (result.queued, result.failed) == (0, 3)

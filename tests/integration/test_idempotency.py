@@ -25,19 +25,19 @@ def snapshot(db_session) -> dict:
   }
 
 
-def test_running_the_same_jobs_twice_changes_nothing(client, db_session, fake_queue, worker,
+def test_running_the_same_jobs_twice_changes_nothing(client, db_session, fake_broker, worker,
                                                      fake_github):
   send_webhook(client, "d-1", "pull_request", pr_event())
-  event_id = fake_queue.event_ids[0]
+  process_job_id = fake_broker.job_ids("process_event")[0]
   worker.run()
   first = snapshot(db_session)
 
-  fake_queue.event_ids.append(event_id)  # Redis hands the same job out again
+  fake_broker.jobs.append(("process_event", process_job_id))  # Redis hands it out again
   worker.run()
 
   assert worker.failures == []
   assert snapshot(db_session) == first  # same rows, same files, same processed_at
-  assert len(fake_github.calls) == 2  # the file sync was repeated, not skipped
+  assert len(fake_github.calls) == 2  # the file sync was queued and run again, not skipped
 
 
 def test_older_event_processed_late_does_not_overwrite_newer_data(client, db_session,

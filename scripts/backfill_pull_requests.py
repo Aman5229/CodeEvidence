@@ -40,7 +40,7 @@ async def main() -> None:
     for repo_full_name in args.repos:
       print(f"Backfilling {repo_full_name} (up to {args.max_prs} PRs)...")
       result = await backfill_repository(db, github, repo_full_name, args.max_prs)
-      print(f"  stored={result.stored}  skipped={result.skipped}  failed={result.failed}")
+      print(f"  queued={result.queued}  skipped={result.skipped}  failed={result.failed}")
   except httpx.HTTPStatusError as error:
     print(f"\nStopped: GitHub returned {error.response.status_code} ({error.request.url}).")
     print("If this is a rate limit, wait a while and re-run: stored PRs are skipped.")

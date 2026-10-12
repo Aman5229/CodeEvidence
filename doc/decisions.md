@@ -97,3 +97,35 @@ processes can also finish events for the same PR in any order.
   same second are treated as the same version, and the later one to be processed wins.
 - Two file syncs for the same PR running at the same moment can conflict on the
   `(pull_request_id, path)` unique constraint. One fails and needs a retry (planned next).
+
+## Job tracking and dead letters in one table (12 Oct 2026)
+
+**Context.** Jobs need retries with backoff, a place for jobs that keep failing (dead letters),
+and a visible status per webhook delivery.
+
+**Options considered**
+- Celery's own state (result backend in Redis) plus a separate dead-letter table.
+- **One `job_runs` table in Postgres**: one row per job with its type, payload, status,
+  attempts and last error. Failed rows are the dead letters.
+
+**Choice: one `job_runs` table.** Postgres is the system of record; job state can be queried
+and joined with events; and only `{"job_id": N}` needs to travel through Redis. Retries use
+Celery's `retry` with our own countdown (exponential backoff with full jitter, 5 retries),
+and only for transient errors (timeouts, 429, 5xx).
+
+**Trade-offs**
+- Two extra writes per job (running, then finished).
+- If the app crashes after committing a job but before sending its message, the job stays
+  `queued`. The transactional outbox would close that gap; it was skipped as a stretch task.
+
+## Webhook route must not be `async def` (12 Oct 2026)
+
+**Context.** The first webhook load test gave 4.9 requests/s, a p95 of 21 s and failures:
+the database pool ran out because blocking calls inside an `async def` route froze the
+event loop while other requests held connections.
+
+**Choice.** Routes that make blocking calls are plain `def`; FastAPI runs them in its thread
+pool. Only work that is truly async (reading the request body) stays `async`. Result:
+47 requests/s, p95 1.5 s, no failures. The rule for this codebase: no blocking call inside
+`async def`. Moving to async database drivers would be the alternative, but it changes every
+query and is not needed at this load.

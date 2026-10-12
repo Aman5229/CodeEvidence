@@ -198,3 +198,55 @@ Each request holds its connection for the whole request, including the time Pyth
 building the response, because the session lives as long as the request. That is why
 connections show `idle in transaction`. It is fine at this size. If the pool becomes the
 limit later, the fix is to close the session before serializing, not to enlarge the pool.
+
+## Webhook under load (queued flow)
+
+**Question:** how fast does the webhook answer now that it only stores and queues?
+
+Load: `loadtests/webhook_locustfile.py`, signed deliveries with a new delivery id each, 60 s,
+measured 12 Oct 2026. The deliveries are `push` events: they take the same webhook path as
+`pull_request` events (verify, store, queue, 202), but their job does not call GitHub, so the
+test does not use up the GitHub rate limit. The body is the 871-byte sample payload; real
+pull request payloads are larger.
+
+| Run | Requests/s | p50 (ms) | p95 (ms) | p99 (ms) | Failures |
+|---|---|---|---|---|---|
+| 50 users, route was `async def` | 4.9 | 360 | 21,000 | 21,000 | 3 (500s, dropped connections) |
+| 50 users, route is `def` (fixed) | 47.1 | 610 | 1,500 | 2,100 | 0 |
+| 5 users, route is `def` | 15.3 | 33 | 52 | 78 | 0 |
+
+Queue lag in the fixed 50-user run (job queued until job finished, from `job_runs`):
+2,831 jobs, all succeeded, p50 137 ms, p95 200 ms, max 329 ms. The two worker
+processes kept up with the webhook.
+
+**The first run found a bug.** The webhook route was `async def` but made blocking calls
+(SQLAlchemy, Celery). FastAPI runs `async def` routes on the event loop, one thread shared by all
+requests, so each blocking call froze every request. Requests paused at `await request.body()`
+held database connections they could not release while the loop was frozen, the pool's 15
+connections ran out, and requests waited for the 10 s pool timeout. The route is now a plain
+`def` (FastAPI runs it in its thread pool) and only the body is read in a small `async`
+dependency. Other routes were already `def`.
+
+At 47 requests/s the single app process is CPU-bound again, as in the read API load test.
+The inline flow (before the queue) was not load-tested: it called the GitHub API on every
+request, and a load test would have used up the rate limit. One real inline-equivalent call,
+the file fetch for the sample PR, took 0.93 s in the worker.
+
+## Backfill with 1, 2 and 4 worker processes
+
+**Question:** does adding worker processes speed up a backfill?
+
+`python -m scripts.backfill_pull_requests pallets/click --max-prs 100`: the script stores
+100 PRs and queues one `sync_pr_files` job per PR; the jobs call the real GitHub API. The
+repository's PRs, files and jobs were deleted before each run. Measured 12 Oct 2026; time is
+from the first job queued to the last job finished (`job_runs`).
+
+| Worker processes (`WORKER_CONCURRENCY`) | 100 file syncs took | Speed-up |
+|---|---|---|
+| 1 | 74.6 s | 1.0x |
+| 2 | 34.5 s | 2.2x |
+| 4 | 17.3 s | 4.3x |
+
+All 300 jobs succeeded. The jobs spend nearly all their time waiting for GitHub, not using
+CPU, so more processes scale almost linearly. The limit is GitHub's rate limit
+(5,000 requests per hour for a token), not the worker.

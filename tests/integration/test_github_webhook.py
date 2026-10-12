@@ -5,8 +5,7 @@ import json
 from sqlalchemy import func, select
 
 from app.core.config import settings
-from app.db.models import GitHubEvent, PullRequest, PullRequestFile, Repository
-from app.jobs import get_event_queue
+from app.db.models import GitHubEvent, JobRun, PullRequest, PullRequestFile, Repository
 
 # ---------- helpers ----------
 
@@ -73,17 +72,21 @@ def test_invalid_signature_is_rejected_and_nothing_is_stored(client, db_session)
   assert count(db_session, GitHubEvent) == 0
 
 
-def test_ping_event_is_stored_and_queued(client, db_session, fake_queue):
+def test_ping_event_is_stored_and_queued(client, db_session, fake_broker):
   response = send_webhook(client, "d-1", "ping", {"zen": "hi"})
 
   assert response.status_code == 202
   assert response.json()["status"] == "queued"
   event = get_event(db_session, "d-1")
   assert event.status == "received"
-  assert fake_queue.event_ids == [event.id]
+  job = db_session.scalars(select(JobRun)).one()
+  assert (job.job_type, job.status, job.event_id, job.payload) == (
+    "process_event", "queued", event.id, {"event_id": event.id}
+  )
+  assert fake_broker.jobs == [("process_event", job.id)]
 
 
-def test_webhook_only_stores_and_queues(client, db_session, fake_github, fake_queue):
+def test_webhook_only_stores_and_queues(client, db_session, fake_github, fake_broker):
   """The request does no processing: no GitHub call, no PR rows until the worker runs."""
   payload = {"action": "opened", "repository": repo_payload(), "pull_request": pr_payload()}
 
@@ -93,7 +96,7 @@ def test_webhook_only_stores_and_queues(client, db_session, fake_github, fake_qu
   assert count(db_session, GitHubEvent) == 1
   assert count(db_session, PullRequest) == 0
   assert fake_github.calls == []
-  assert fake_queue.event_ids == [get_event(db_session, "d-1").id]
+  assert len(fake_broker.job_ids("process_event")) == 1
 
 
 def test_worker_stores_repo_pr_and_files(client, db_session, fake_github, worker):
@@ -112,7 +115,7 @@ def test_worker_stores_repo_pr_and_files(client, db_session, fake_github, worker
   assert event.processed_at is not None
 
 
-def test_duplicate_delivery_is_not_queued_again(client, db_session, fake_queue):
+def test_duplicate_delivery_is_not_queued_again(client, db_session, fake_broker):
   payload = {"action": "opened", "repository": repo_payload(), "pull_request": pr_payload()}
   send_webhook(client, "d-1", "pull_request", payload)
 
@@ -121,7 +124,7 @@ def test_duplicate_delivery_is_not_queued_again(client, db_session, fake_queue):
   assert response.status_code == 200
   assert response.json()["status"] == "duplicate_ignored"
   assert count(db_session, GitHubEvent) == 1
-  assert len(fake_queue.event_ids) == 1
+  assert len(fake_broker.jobs) == 1
 
 
 def test_new_commit_updates_pr_and_replaces_files(client, db_session, fake_github, worker):
@@ -158,8 +161,8 @@ def test_github_failure_fails_only_the_file_sync(client, db_session, fake_github
   assert "503" in str(worker.failures[0])
 
 
-def test_enqueue_failure_marks_event_failed_and_returns_503(client, db_session, fake_queue):
-  fake_queue.should_fail = True
+def test_enqueue_failure_marks_event_failed_and_returns_503(client, db_session, fake_broker):
+  fake_broker.should_fail = True
   payload = {"action": "opened", "repository": repo_payload(), "pull_request": pr_payload()}
 
   response = send_webhook(client, "d-1", "pull_request", payload)
@@ -169,14 +172,16 @@ def test_enqueue_failure_marks_event_failed_and_returns_503(client, db_session, 
   event = get_event(db_session, "d-1")
   assert event.status == "failed"
   assert "Redis is unreachable" in event.error_message
+  job = db_session.scalars(select(JobRun)).one()
+  assert job.status == "failed"  # the job row is a dead letter too, never stuck in "queued"
 
 
-def test_failed_delivery_is_queued_again_when_redelivered(client, db_session, fake_queue, worker):
+def test_failed_delivery_is_queued_again_when_redelivered(client, db_session, fake_broker, worker):
   payload = {"action": "opened", "repository": repo_payload(), "pull_request": pr_payload()}
-  fake_queue.should_fail = True
+  fake_broker.should_fail = True
   send_webhook(client, "d-1", "pull_request", payload)
 
-  fake_queue.should_fail = False
+  fake_broker.should_fail = False
   response = send_webhook(client, "d-1", "pull_request", payload)
   worker.run()
 
@@ -188,17 +193,20 @@ def test_failed_delivery_is_queued_again_when_redelivered(client, db_session, fa
   assert count(db_session, PullRequestFile) == 2
 
 
-def test_event_is_committed_before_it_is_queued(client, engine):
-  """The worker uses its own connection, so the row must already be visible to others."""
+def test_event_and_job_are_committed_before_dispatch(client, engine, monkeypatch):
+  """The worker uses its own connection, so the rows must already be visible to others."""
   from sqlalchemy.orm import Session
+
+  import app.jobs as jobs
 
   seen_by_worker = []
 
-  def check_from_another_connection(event_id):
+  def check_from_another_connection(task, job_id):
     with Session(engine) as other:
-      seen_by_worker.append(other.get(GitHubEvent, event_id) is not None)
+      job = other.get(JobRun, job_id)
+      seen_by_worker.append(job is not None and other.get(GitHubEvent, job.event_id) is not None)
 
-  client.app.dependency_overrides[get_event_queue] = lambda: check_from_another_connection
+  monkeypatch.setattr(jobs, "dispatch", check_from_another_connection)
 
   send_webhook(client, "d-1", "ping", {"zen": "hi"})
 

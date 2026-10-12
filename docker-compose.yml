@@ -58,7 +58,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: celery -A app.worker worker --loglevel=info --concurrency=2
+    # On `docker compose stop`, Celery gets SIGTERM: it takes no new jobs and finishes the
+    # running ones (warm shutdown). Docker sends SIGKILL after stop_grace_period.
+    stop_grace_period: 60s
+    command: celery -A app.worker worker --loglevel=info --concurrency=${WORKER_CONCURRENCY:-2}
 
 volumes:
   postgres_data:

@@ -75,3 +75,25 @@ How each number is worked out:
 - If there is nothing to divide by or nothing to take a median of, the value is null, not 0.
   For example, a repository with only open PRs has merge_rate null. That means "not known yet",
   while 0 would claim that nothing was ever merged.
+
+### 6. POST /webhooks/github
+Receives a signed GitHub webhook. Stores the raw event, queues it for the worker and returns
+202 `{"status": "queued", ...}` right away. A delivery that was already handled returns 200
+`{"status": "duplicate_ignored"}`. 401 for a bad signature; 400 for a missing header or bad JSON;
+503 if the job could not be queued (GitHub's Redeliver can retry it).
+
+### 7. GET /events/{delivery_id}
+One webhook delivery and the background jobs it started: id, github_delivery_id, event_type,
+action, status, error_message, received_at, processed_at, and jobs (a list of jobs, below).
+404 if the delivery id is unknown.
+
+### 8. GET /jobs
+Background jobs, newest first, paged like the other lists. Option `status` (queued, running,
+retrying, succeeded, failed) defaults to `failed`: the dead letters, jobs that failed for good.
+Each job has: id, job_type, payload, status, attempts, last_error, event_id, created_at,
+updated_at, finished_at. How jobs are retried is described in [background-jobs.md](background-jobs.md).
+
+### 9. POST /jobs/{job_id}/retry
+Queues a failed job again, after its cause has been fixed. Returns 202 with the job, now `queued`.
+404 if the job does not exist; 409 if it is not `failed`; 503 if it could not be queued.
+

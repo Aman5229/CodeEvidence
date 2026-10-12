@@ -27,7 +27,8 @@ A Celery worker then does the work in two jobs:
 - **`sync_pr_files`** (calls GitHub): fetches the PR's changed files (paginated, up to
   GitHub's 3,000-file limit) and replaces the stored file list.
 
-If GitHub fails, only the file sync fails: the PR row is already saved. If the job cannot
+If GitHub fails, only the file sync fails and is retried with backoff (up to 6 attempts); the
+PR row is already saved. Jobs that still fail become dead letters (`GET /jobs`). If the job cannot
 be queued (Redis unreachable), the event is marked `failed` and the webhook returns `503`,
 so the delivery can be retried with GitHub's **Redeliver** button. A redelivered failed
 event is queued again.
@@ -41,7 +42,10 @@ event is queued again.
 | GET | `/repositories/{id}/stats` | PR counts, merge rate, bot share, median size and time to close |
 | GET | `/repositories/{id}/pull-requests` | PRs, newest first; filters: `status`, `merged`, `author`, `is_bot`, `created_after`, `created_before` |
 | GET | `/pull-requests/{id}` | One PR with changed files and totals (`?include_patch=true` adds the diffs) |
-| POST | `/webhooks/github` | Signed GitHub webhook receiver |
+| POST | `/webhooks/github` | Signed GitHub webhook receiver (stores, queues, answers 202) |
+| GET | `/events/{delivery_id}` | A delivery and the status of every job it started |
+| GET | `/jobs` | Background jobs; by default the dead letters (`status=failed`) |
+| POST | `/jobs/{id}/retry` | Queue a dead letter again |
 
 Lists return `{"items": [...], "next_cursor": "..."}`. Send `next_cursor` back as
 `cursor` to get the next page. Errors always look like
@@ -262,7 +266,8 @@ every run. Real repositories are never touched.
 
 ## Known limitations
 
-- **Failed jobs are not retried yet.** A failed file sync stays failed until the next event for that PR.
+- **No transactional outbox.** If the app crashes between committing an event and queueing its job, the job stays `queued` and never runs. Such jobs can be found with `GET /jobs?status=queued`, but there is no one-click recovery for them yet. See [doc/background-jobs.md](doc/background-jobs.md).
+- **GitHub rate-limit 403s are not retried yet**, and redirects for renamed repositories are not followed.
 - **Only `pull_request` events are processed.** Other events are stored as `received`.
 - **Repository metadata is not refreshed** after the first insert (e.g. a renamed repo keeps its old name).
 - `patch_truncated` and `is_stale` on files are placeholders, not yet computed.
