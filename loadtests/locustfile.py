@@ -1,8 +1,12 @@
 """Simulated dashboard traffic against the synthetic repositories.
 
+Needs an API key in the API_KEY environment variable (python -m scripts.create_api_key load-test)
+and a rate limit raised for the run, or most requests get 429 (see doc/performance.md).
+
 Mix: 40% PR lists (a few common filters), 20% repository stats, 40% PR details
 (from each repository's 100 most recent PRs). See doc/performance.md for how to run it.
 """
+import os
 import random
 
 from locust import HttpUser, between, task
@@ -15,6 +19,7 @@ class DashboardUser(HttpUser):
 
   def on_start(self):
     """Find the synthetic repositories and their recent PR ids (reported as "setup")."""
+    self.client.headers["X-API-Key"] = os.environ["API_KEY"]
     repositories = self.client.get("/repositories?limit=100", name="setup").json()["items"]
     self.repository_ids = [
       repo["id"] for repo in repositories if repo["full_name"].startswith("synthetic/")

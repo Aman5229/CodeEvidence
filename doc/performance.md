@@ -22,6 +22,10 @@ so a result can be repeated and checked.
 python -m scripts.seed_synthetic_data
 docker compose up -d --build
 
+# API key for Locust, and a rate limit high enough not to be the thing measured
+export API_KEY=$(python -m scripts.create_api_key load-test | sed -n 's/^Key.*: //p')
+export RATE_LIMIT_CAPACITY=1000000 RATE_LIMIT_PER_SECOND=1000000
+
 # 1. Without the cache
 CACHE_ENABLED=false docker compose up -d app
 until curl -sf localhost:8000/health > /dev/null; do sleep 1; done   # wait until the app is up

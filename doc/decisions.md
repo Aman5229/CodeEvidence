@@ -157,3 +157,36 @@ becomes a dead letter instead of staying `retrying`.
 **Trade-offs.** A half-open probe that hangs holds the probe key until it expires (30 s). The
 breaker counts failures from any PR, so one broken repository could open it for all; scoping
 it per repository was not needed yet.
+
+## Observability and security for the read API (12 Oct 2026)
+
+**JSON logs with context variables.** One JSON object per line, from our code and from
+libraries. The request, delivery and job ids live in `contextvars` and are added to every
+log record by a record factory, so code never has to pass them around. The job message
+carries the ids, so the worker's lines match the webhook request that caused them.
+Alternative: a logging library (structlog); stdlib logging was enough and adds no dependency.
+
+**Metrics from the source of truth.** Request latency is a histogram in the app process. Job
+counts, queue depth, cache counters and the breaker state are read at scrape time from
+Postgres and Redis, because the worker runs in other processes. Alternative: Prometheus
+multiprocess mode with metric files shared between processes; more moving parts and still
+blind across containers.
+
+**Liveness is not readiness.** `/health` checks only that the process runs; `/health/ready`
+checks the database, cache and queue. Making liveness depend on the database would make an
+orchestrator restart healthy app processes during a database outage, which fixes nothing.
+
+**API keys stored as SHA-256 hashes.** Keys are 32 random bytes, so an unsalted fast hash is
+safe; slow password hashes (bcrypt, argon2) protect guessable secrets and would add latency
+to every request. Lookup is by hash, so the stored value is never compared with
+attacker-chosen input byte by byte. Each request costs one indexed lookup (pinned by a test).
+
+**Token bucket in Redis, failing open.** Allows bursts up to the capacity and a steady rate
+after that. One Lua script makes the check atomic across app processes and uses Redis's
+clock. If Redis is down the request is allowed: a missing rate limit for a while is better
+than a read API that is down. Alternatives: fixed windows (bursts at window edges), sliding
+logs (memory per request).
+
+**Bug found while checking in Docker.** The key script read the new row's attributes after its
+session had closed (`commit()` expires loaded objects), so it crashed before printing the
+key. It now prints inside the session.

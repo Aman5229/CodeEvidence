@@ -246,7 +246,7 @@ def test_transient_failure_counts_against_the_budget(db_session, fake_broker, wo
   job = run_sync(db_session, fake_broker, worker, {"failures": 2})
 
   assert job.status == "retrying"
-  assert captured_retry[0]["message"] == {"job_id": job.id, "failures": 3}
+  assert (captured_retry[0]["message"]["job_id"], captured_retry[0]["message"]["failures"]) == (job.id, 3)
   assert 0 <= captured_retry[0]["countdown"] <= 5 * 2**2
 
 
@@ -261,7 +261,7 @@ def test_rate_limit_pauses_until_reset_without_using_the_budget(db_session, fake
   job = run_sync(db_session, fake_broker, worker, {"failures": 2})
 
   assert job.status == "retrying"
-  assert captured_retry[0]["message"] == {"job_id": job.id, "failures": 2}  # unchanged
+  assert captured_retry[0]["message"]["failures"] == 2  # unchanged
   assert 55 <= captured_retry[0]["countdown"] <= 62
 
 

@@ -18,15 +18,20 @@ We write this plan before the code, so we know what we are building.
   | Status | code               | When |
   |--------|--------------------|------|
   | 400    | bad_request        | The request is wrong, e.g. a broken cursor or a missing webhook header |
-  | 401    | unauthorized       | The webhook signature does not match |
+  | 401    | unauthorized       | Missing, unknown or revoked API key, or a bad webhook signature |
   | 404    | not_found          | That id does not exist, or the URL does not exist |
   | 405    | method_not_allowed | Wrong HTTP method; the Allow header lists the right one |
   | 422    | validation_error   | A value has the wrong type or range, e.g. limit=abc or limit=0 |
+  | 429    | rate_limited       | Too many requests for this API key; wait for the Retry-After seconds |
   | 500    | internal_error     | A bug on our side. The details are logged and never sent to the client |
 
   For 422, the message lists every bad value as "where.name: problem", separated by "; ",
   e.g. "query.limit: Input should be greater than or equal to 1; query.status: Input should be 'open' or 'closed'".
 
+- Access: every endpoint below except the webhook (6) needs an API key in the `X-API-Key`
+  header (401 without a valid one), and each key is rate-limited (429 with a `Retry-After`
+  header when over the limit). See [operations.md](operations.md).
+- Every response has an `X-Request-ID` header; send your own to trace a request in the logs.
 - Caching: the pull request list, a pull request's detail and repository stats are cached
   in Redis for up to 5 minutes. Each combination of filters, limit and cursor is cached
   separately, so pages never mix. Errors are not cached.

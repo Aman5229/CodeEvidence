@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.api.errors import error_responses
 from app.core.config import settings
+from app.core.logs import delivery_id_var
 from app.db.session import get_db
 from app.integrations.github.signature import is_valid_signature
 from app.jobs import enqueue_process_event
@@ -40,6 +41,7 @@ def github_webhook(
     raise HTTPException(status_code=400, detail="Missing X-GitHub-Delivery header")
   if not x_github_event:
     raise HTTPException(status_code=400, detail="Missing X-GitHub-Event header")
+  delivery_id_var.set(x_github_delivery)  # every log line from here on carries it
 
   if not is_valid_signature(raw_body, x_hub_signature_256, settings.github_webhook_secret):
     raise HTTPException(status_code=401, detail="Invalid signature")

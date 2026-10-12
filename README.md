@@ -53,8 +53,13 @@ Lists return `{"items": [...], "next_cursor": "..."}`. Send `next_cursor` back a
 `{"error": {"code": "not_found", "message": "..."}}`.
 
 ```bash
-curl "http://localhost:8000/repositories/1/pull-requests?merged=true&limit=5"
+curl -H "X-API-Key: $API_KEY" "http://localhost:8000/repositories/1/pull-requests?merged=true&limit=5"
 ```
+
+The read API needs an API key (`python -m scripts.create_api_key "my laptop"`, sent as the
+`X-API-Key` header) and is rate-limited per key. Logs are JSON with request, delivery and job
+ids; `GET /metrics` serves Prometheus metrics; `GET /health` and `GET /health/ready` are the
+liveness and readiness checks. See [doc/operations.md](doc/operations.md).
 
 Interactive docs are served at `/docs`. The full design is in [doc/api.md](doc/api.md).
 

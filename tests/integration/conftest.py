@@ -84,7 +84,7 @@ def db_session(engine):
   with engine.begin() as connection:
     connection.execute(
       text(
-        "TRUNCATE job_runs, github_events, pull_request_files, pull_requests, repositories "
+        "TRUNCATE api_keys, job_runs, github_events, pull_request_files, pull_requests, repositories "
         "RESTART IDENTITY CASCADE"
       )
     )
@@ -112,12 +112,14 @@ class FakeBroker:
 
   def __init__(self) -> None:
     self.jobs: list[tuple[str, int]] = []  # (job_type, job_id), in dispatch order
+    self.messages: dict[int, dict] = {}  # the full message last sent for each job id
     self.should_fail = False
 
-  def dispatch(self, task, job_id: int) -> None:
+  def dispatch(self, task, message) -> None:
     if self.should_fail:
       raise ConnectionError("Redis is unreachable")
-    self.jobs.append((task.name.rsplit(".", 1)[-1], job_id))
+    self.jobs.append((task.name.rsplit(".", 1)[-1], message.job_id))
+    self.messages[message.job_id] = message.model_dump()
 
   def job_ids(self, job_type: str) -> list[int]:
     return [job_id for kind, job_id in self.jobs if kind == job_type]
@@ -161,8 +163,9 @@ def worker(monkeypatch, db_session, redis_client, fake_github, fake_broker):
       """Run everything dispatched so far, including the jobs those jobs dispatch."""
       while fake_broker.jobs:
         job_type, job_id = fake_broker.jobs.pop(0)
+        message = fake_broker.messages.get(job_id, {"job_id": job_id})
         try:
-          jobs.JOB_TASKS[job_type]({"job_id": job_id})
+          jobs.JOB_TASKS[job_type](message)
         except Exception as error:
           db_session.rollback()
           self.failures.append(error)
@@ -171,15 +174,29 @@ def worker(monkeypatch, db_session, redis_client, fake_github, fake_broker):
 
 
 @pytest.fixture
-def client(db_session, redis_client, fake_github, fake_broker):
-  """An HTTP client for the app, wired to the test DB, test Redis, fake GitHub and fake broker."""
+def api_key(db_session) -> str:
+  """A real API key in the test database."""
+  from app.modules.api_keys import create_api_key
+
+  return create_api_key(db_session, "tests")[1]
+
+
+@pytest.fixture
+def client(db_session, redis_client, fake_github, fake_broker, api_key, monkeypatch):
+  """An HTTP client for the app, wired to the test DB, test Redis, fake GitHub and fake broker.
+
+  It sends a valid API key on every request, so the read API's real auth path is exercised.
+  The rate limit is raised so that only the rate-limit tests ever reach it.
+  """
+  from app.core.config import settings
 
   def override_get_db():
     yield db_session
 
+  monkeypatch.setattr(settings, "rate_limit_capacity", 10_000)
   app.dependency_overrides[get_db] = override_get_db
   # Ids restart at 1 in every test, so a shared cache would leak old responses.
   app.dependency_overrides[get_redis] = lambda: redis_client
   app.dependency_overrides[get_github_client] = lambda: fake_github
-  yield TestClient(app)
+  yield TestClient(app, headers={"X-API-Key": api_key})
   app.dependency_overrides.clear()

@@ -201,9 +201,9 @@ def test_event_and_job_are_committed_before_dispatch(client, engine, monkeypatch
 
   seen_by_worker = []
 
-  def check_from_another_connection(task, job_id):
+  def check_from_another_connection(task, message):
     with Session(engine) as other:
-      job = other.get(JobRun, job_id)
+      job = other.get(JobRun, message.job_id)
       seen_by_worker.append(job is not None and other.get(GitHubEvent, job.event_id) is not None)
 
   monkeypatch.setattr(jobs, "dispatch", check_from_another_connection)

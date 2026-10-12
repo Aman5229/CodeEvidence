@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.cache import invalidate_pull_request
+from app.core.logs import delivery_id_var, job_id_var, request_id_var
 from app.db.models import JobRun
 from app.db.redis import redis_client
 from app.db.session import SessionLocal
@@ -66,10 +67,29 @@ def get_github_guard() -> GitHubGuard:
 # ---------- the worker side ----------
 
 def run_tracked(task: Task, message: dict, handler: Callable[[Session, JobRun], None]) -> None:
-  """Run one job and record it: running, then succeeded, retrying or failed (dead letter)."""
+  """Run one job and record it: running, then succeeded, retrying or failed (dead letter).
+
+  The request and delivery ids from the message are restored, so the job's log lines can be
+  matched with the webhook request that queued it.
+  """
   received = JobMessage.model_validate(message)
+  tokens = [
+    request_id_var.set(received.request_id),
+    delivery_id_var.set(received.delivery_id),
+    job_id_var.set(received.job_id),
+  ]
+  started = time.perf_counter()
+  try:
+    _run(task, received, handler, started)
+  finally:
+    for var, token in zip((request_id_var, delivery_id_var, job_id_var), tokens, strict=True):
+      var.reset(token)
+
+
+def _run(task: Task, received: JobMessage, handler, started: float) -> None:
   with SessionLocal() as db:
     job = start_job_run(db, received.job_id)
+    logger.info("Job started", extra={"job_type": job.job_type, "attempt": job.attempts})
     try:
       handler(db, job)
     except Exception as error:
@@ -78,11 +98,14 @@ def run_tracked(task: Task, message: dict, handler: Callable[[Session, JobRun], 
       will_retry = paused or (is_retryable(error) and received.failures < MAX_RETRIES)
       fail_job_run(job, error, will_retry=will_retry)
       db.commit()
+      outcome = "paused" if paused else "retrying" if will_retry else "failed"
+      log = logger.warning if will_retry else logger.error
+      log("Job %s: %s", outcome, error, extra={"job_type": job.job_type, "outcome": outcome})
       if will_retry:
         failures = received.failures if paused else received.failures + 1
         try:
           task.retry(
-            args=[JobMessage(job_id=job.id, failures=failures).model_dump()],
+            args=[received.model_copy(update={"failures": failures}).model_dump()],
             countdown=retry_countdown(error, received.failures),
             exc=error,
           )  # raises Retry once the retry is scheduled
@@ -96,10 +119,13 @@ def run_tracked(task: Task, message: dict, handler: Callable[[Session, JobRun], 
           fail_job_run(job, retry_error, will_retry=False)
           db.commit()
           raise
-      logger.error("Job %s (%s) failed for good: %s", job.id, job.job_type, error)
       raise
     finish_job_run(job)
     db.commit()
+    logger.info(
+      "Job succeeded",
+      extra={"job_type": job.job_type, "duration_ms": round((time.perf_counter() - started) * 1000, 1)},
+    )
 
 
 def _process_event(db: Session, job: JobRun) -> None:
@@ -156,9 +182,14 @@ def sync_pr_files(self, message: dict) -> None:
 JOB_TASKS = {task.name.rsplit(".", 1)[-1]: task for task in (process_event, sync_pr_files)}
 
 
-def dispatch(task: Task, job_id: int) -> None:
+def new_message(job_id: int) -> JobMessage:
+  """A job message that carries the current request and delivery ids to the worker's logs."""
+  return JobMessage(job_id=job_id, request_id=request_id_var.get(), delivery_id=delivery_id_var.get())
+
+
+def dispatch(task: Task, message: JobMessage) -> None:
   """The only place that talks to the broker. Tests replace it with a fake."""
-  task.delay(JobMessage(job_id=job_id).model_dump())
+  task.delay(message.model_dump())
 
 
 def enqueue_job(db: Session, task: Task, payload: BaseModel, *, event_id: int | None) -> JobRun:
@@ -167,7 +198,7 @@ def enqueue_job(db: Session, task: Task, payload: BaseModel, *, event_id: int | 
   job = create_job_run(db, job_type=job_type, payload=payload.model_dump(), event_id=event_id)
   db.commit()  # before queueing, so the worker can already see the row
   try:
-    dispatch(task, job.id)
+    dispatch(task, new_message(job.id))
   except Exception as error:
     fail_job_run(job, error, will_retry=False)
     db.commit()
@@ -180,7 +211,7 @@ def retry_failed_job(db: Session, job: JobRun) -> None:
   requeue_job_run(job)
   db.commit()
   try:
-    dispatch(JOB_TASKS[job.job_type], job.id)
+    dispatch(JOB_TASKS[job.job_type], new_message(job.id))
   except Exception as error:
     fail_job_run(job, error, will_retry=False)
     db.commit()

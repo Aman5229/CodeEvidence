@@ -32,12 +32,17 @@ def add_files(db_session, pull_request, count: int) -> None:
 
 
 @contextmanager
-def count_queries(engine):
-  """Count every SQL statement sent to the database inside the `with` block."""
+def count_queries(engine, include_auth: bool = False):
+  """Count the SQL statements sent to the database inside the `with` block.
+
+  The API-key lookup that every protected request makes is left out unless include_auth is
+  set, so these counts measure the endpoint's own data queries.
+  """
   statements = []
 
   def record(conn, cursor, statement, parameters, context, executemany):
-    statements.append(statement)
+    if include_auth or "FROM api_keys" not in statement:
+      statements.append(statement)
 
   event.listen(engine, "before_cursor_execute", record)
   try:

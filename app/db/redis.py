@@ -13,3 +13,14 @@ redis_client = Redis.from_url(
 
 def get_redis() -> Redis:
   return redis_client
+
+
+# The job queue's Redis (a separate database), for readiness checks and queue-depth metrics.
+broker_client = Redis.from_url(
+  settings.celery_broker_url, socket_connect_timeout=2, socket_timeout=2
+)
+
+
+def get_broker() -> Redis:
+  return broker_client
+
