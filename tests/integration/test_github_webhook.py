@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 
 from app.core.config import settings
 from app.db.models import GitHubEvent, PullRequest, PullRequestFile, Repository
+from app.jobs import get_event_queue
 
 # ---------- helpers ----------
 
@@ -72,50 +73,67 @@ def test_invalid_signature_is_rejected_and_nothing_is_stored(client, db_session)
   assert count(db_session, GitHubEvent) == 0
 
 
-def test_ping_event_is_stored_as_received(client, db_session):
+def test_ping_event_is_stored_and_queued(client, db_session, fake_queue):
   response = send_webhook(client, "d-1", "ping", {"zen": "hi"})
 
-  assert response.status_code == 200
+  assert response.status_code == 202
+  assert response.json()["status"] == "queued"
   event = get_event(db_session, "d-1")
   assert event.status == "received"
-  assert event.repository_id is None
+  assert fake_queue.event_ids == [event.id]
 
 
-def test_pull_request_event_stores_repo_pr_and_files(client, db_session, fake_github):
+def test_webhook_only_stores_and_queues(client, db_session, fake_github, fake_queue):
+  """The request does no processing: no GitHub call, no PR rows until the worker runs."""
   payload = {"action": "opened", "repository": repo_payload(), "pull_request": pr_payload()}
 
   response = send_webhook(client, "d-1", "pull_request", payload)
 
-  assert response.status_code == 200
+  assert response.status_code == 202
+  assert count(db_session, GitHubEvent) == 1
+  assert count(db_session, PullRequest) == 0
+  assert fake_github.calls == []
+  assert fake_queue.event_ids == [get_event(db_session, "d-1").id]
+
+
+def test_worker_stores_repo_pr_and_files(client, db_session, fake_github, worker):
+  payload = {"action": "opened", "repository": repo_payload(), "pull_request": pr_payload()}
+  send_webhook(client, "d-1", "pull_request", payload)
+
+  worker.run()
+
+  assert worker.failures == []
   assert count(db_session, Repository) == 1
   assert count(db_session, PullRequest) == 1
   assert count(db_session, PullRequestFile) == 2
   assert fake_github.calls == [("octo/demo", 7)]
-
   event = get_event(db_session, "d-1")
   assert event.status == "processed"
   assert event.processed_at is not None
 
 
-def test_duplicate_delivery_is_ignored(client, db_session, fake_github):
+def test_duplicate_delivery_is_not_queued_again(client, db_session, fake_queue):
   payload = {"action": "opened", "repository": repo_payload(), "pull_request": pr_payload()}
   send_webhook(client, "d-1", "pull_request", payload)
 
   response = send_webhook(client, "d-1", "pull_request", payload)
 
+  assert response.status_code == 200
   assert response.json()["status"] == "duplicate_ignored"
   assert count(db_session, GitHubEvent) == 1
-  assert len(fake_github.calls) == 1  # GitHub was NOT called a second time
+  assert len(fake_queue.event_ids) == 1
 
 
-def test_new_commit_updates_pr_and_replaces_files(client, db_session, fake_github):
+def test_new_commit_updates_pr_and_replaces_files(client, db_session, fake_github, worker):
   send_webhook(client, "d-1", "pull_request",
                {"action": "opened", "repository": repo_payload(), "pull_request": pr_payload()})
+  worker.run()
 
   fake_github.files = fake_github.files[:1]  # the new commit leaves only one changed file
   send_webhook(client, "d-2", "pull_request",
                {"action": "synchronize", "repository": repo_payload(),
                 "pull_request": pr_payload(title="Add feature v2", head_sha="c" * 40)})
+  worker.run()
 
   assert count(db_session, PullRequest) == 1  # updated, not duplicated
   pr = db_session.execute(select(PullRequest)).scalar_one()
@@ -124,32 +142,64 @@ def test_new_commit_updates_pr_and_replaces_files(client, db_session, fake_githu
   assert count(db_session, PullRequestFile) == 1
 
 
-def test_github_failure_keeps_event_and_rolls_back_everything_else(client, db_session, fake_github):
+def test_github_failure_fails_only_the_file_sync(client, db_session, fake_github, worker):
+  """The PR row is saved by process_event; only the GitHub part fails (retries come later)."""
   fake_github.should_fail = True
   payload = {"action": "opened", "repository": repo_payload(), "pull_request": pr_payload()}
 
   response = send_webhook(client, "d-1", "pull_request", payload)
+  worker.run()
 
-  assert response.status_code == 500
+  assert response.status_code == 202  # GitHub's outage is not our webhook's outage
+  assert get_event(db_session, "d-1").status == "processed"
+  assert count(db_session, PullRequest) == 1
+  assert count(db_session, PullRequestFile) == 0
+  assert len(worker.failures) == 1
+  assert "503" in str(worker.failures[0])
+
+
+def test_enqueue_failure_marks_event_failed_and_returns_503(client, db_session, fake_queue):
+  fake_queue.should_fail = True
+  payload = {"action": "opened", "repository": repo_payload(), "pull_request": pr_payload()}
+
+  response = send_webhook(client, "d-1", "pull_request", payload)
+
+  assert response.status_code == 503
+  assert response.json()["error"]["code"] == "service_unavailable"
   event = get_event(db_session, "d-1")
   assert event.status == "failed"
-  assert "503" in event.error_message
-  assert count(db_session, Repository) == 0
-  assert count(db_session, PullRequest) == 0
-  assert count(db_session, PullRequestFile) == 0
+  assert "Redis is unreachable" in event.error_message
 
 
-def test_failed_delivery_is_processed_when_redelivered(client, db_session, fake_github):
+def test_failed_delivery_is_queued_again_when_redelivered(client, db_session, fake_queue, worker):
   payload = {"action": "opened", "repository": repo_payload(), "pull_request": pr_payload()}
-  fake_github.should_fail = True
+  fake_queue.should_fail = True
   send_webhook(client, "d-1", "pull_request", payload)
 
-  fake_github.should_fail = False
+  fake_queue.should_fail = False
   response = send_webhook(client, "d-1", "pull_request", payload)
+  worker.run()
 
-  assert response.status_code == 200
+  assert response.status_code == 202
   db_session.expire_all()  # forget cached values, read fresh from the database
   event = get_event(db_session, "d-1")
   assert event.status == "processed"
   assert event.error_message is None
   assert count(db_session, PullRequestFile) == 2
+
+
+def test_event_is_committed_before_it_is_queued(client, engine):
+  """The worker uses its own connection, so the row must already be visible to others."""
+  from sqlalchemy.orm import Session
+
+  seen_by_worker = []
+
+  def check_from_another_connection(event_id):
+    with Session(engine) as other:
+      seen_by_worker.append(other.get(GitHubEvent, event_id) is not None)
+
+  client.app.dependency_overrides[get_event_queue] = lambda: check_from_another_connection
+
+  send_webhook(client, "d-1", "ping", {"zen": "hi"})
+
+  assert seen_by_worker == [True]

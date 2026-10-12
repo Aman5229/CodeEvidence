@@ -21,6 +21,7 @@ ERROR_CODES = {
   422: "validation_error",
   429: "rate_limited",
   500: "internal_error",
+  503: "service_unavailable",
 }
 
 # Text shown next to each error status in /docs.
@@ -30,6 +31,7 @@ ERROR_DESCRIPTIONS = {
   404: "The resource does not exist",
   422: "A parameter has the wrong type or value",
   500: "Unexpected server error",
+  503: "A dependency is unavailable; retry later",
 }
 
 

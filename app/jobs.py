@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Callable
 
 from app.core.cache import invalidate_pull_request
 from app.db.redis import redis_client
@@ -7,6 +8,11 @@ from app.integrations.github.client import get_github_client
 from app.modules.ingestion.service import process_stored_event, sync_files_for_pull_request
 from app.schemas.jobs import ProcessEventPayload, SyncPullRequestFilesPayload
 from app.worker import celery_app
+
+
+def get_event_queue() -> Callable[[int], None]:
+  """FastAPI dependency: how the webhook queues an event. Tests replace it with a fake."""
+  return enqueue_process_event
 
 
 @celery_app.task

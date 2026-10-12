@@ -16,16 +16,21 @@ When GitHub sends a webhook, CodeEvidence:
 
 1. **Verifies the signature** (HMAC-SHA256 with a shared secret) — rejects anything not genuinely from GitHub.
 2. **Checks for duplicates** by GitHub's delivery ID — the same delivery is never processed twice.
-3. **Saves the raw event first**, in its own transaction — the original payload is never lost, even if processing fails.
-4. **Processes `pull_request` events:**
-   - creates the repository if it is new
-   - creates or updates the pull request (new commits, title changes, merge/close)
-   - fetches the PR's changed files from the GitHub API (paginated, up to GitHub's 3000-file limit) and replaces the stored file list
-5. **Records the outcome** on the event: `processed` (with `processed_at`), `received` (nothing to process, e.g. `ping`), or `failed` (with `error_message`).
+3. **Saves the raw event first** and commits it — the original payload is never lost.
+4. **Queues a background job and answers `202 Accepted`** within milliseconds, without calling GitHub.
 
-If processing fails, all partial work is rolled back, the event is kept as `failed`,
-and the endpoint returns `500` so the delivery can be retried with GitHub's
-**Redeliver** button. A redelivered failed event is processed again.
+A Celery worker then does the work in two jobs:
+
+- **`process_event`** (database only): creates the repository if it is new, creates or updates
+  the pull request, and marks the event `processed` (or `received` for events with nothing
+  to process, such as `ping`).
+- **`sync_pr_files`** (calls GitHub): fetches the PR's changed files (paginated, up to
+  GitHub's 3,000-file limit) and replaces the stored file list.
+
+If GitHub fails, only the file sync fails: the PR row is already saved. If the job cannot
+be queued (Redis unreachable), the event is marked `failed` and the webhook returns `503`,
+so the delivery can be retried with GitHub's **Redeliver** button. A redelivered failed
+event is queued again.
 
 ## API
 
@@ -60,15 +65,18 @@ POST /webhooks/github ── bad headers → 400 · bad signature → 401 · bad
 Already handled? ── yes → 200 duplicate_ignored
       │ no (or previously failed)
       ▼
-Save raw event (commit #1, status=received)
+Save raw event (commit, status=received)
       │
       ▼
-Upsert repository → upsert pull request → sync changed files (GitHub API)
+Queue process_event(event_id) ── Redis down → event failed, 503 (retry via Redeliver)
       │
-  ┌───┴──────────────┐
-success            failure
-commit #2          rollback, status=failed + error_message
-processed          → 500 (retry via Redeliver)
+      ▼
+202 Accepted
+                 ── worker (background) ──────────────────────────────────────────
+                 process_event:  upsert repository → upsert pull request → processed
+                                 → clear cached PR data → queue sync_pr_files(pr_id)
+                 sync_pr_files:  fetch changed files from GitHub → replace stored files
+                                 → clear cached PR data
 ```
 
 ## Project structure
@@ -254,7 +262,7 @@ every run. Real repositories are never touched.
 
 ## Known limitations
 
-- **Processing is synchronous** inside the request, so the webhook responds only after files are fetched from GitHub.
+- **Failed jobs are not retried yet.** A failed file sync stays failed until the next event for that PR.
 - **Only `pull_request` events are processed.** Other events are stored as `received`.
 - **Repository metadata is not refreshed** after the first insert (e.g. a renamed repo keeps its old name).
 - `patch_truncated` and `is_stale` on files are placeholders, not yet computed.

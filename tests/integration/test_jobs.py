@@ -5,14 +5,14 @@ from contextlib import nullcontext
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 import app.jobs as jobs
-from app.db.models import GitHubEvent, PullRequest, PullRequestFile
+from app.db.models import PullRequest, PullRequestFile
 from app.modules.ingestion.event_store import record_event
 from app.modules.ingestion.service import process_stored_event, sync_files_for_pull_request
 from app.schemas.jobs import ProcessEventPayload, SyncPullRequestFilesPayload
-from tests.integration.test_github_webhook import pr_payload, repo_payload, send_webhook
+from tests.integration.test_github_webhook import pr_payload, repo_payload
 
 
 def store_event(db_session, event_type="pull_request", payload=None, delivery_id="d-1"):
@@ -141,33 +141,3 @@ def test_sync_pr_files_job_stores_files(wired_jobs, db_session):
   jobs.sync_pr_files({"pull_request_id": pull_request_id})
 
   assert len(db_session.scalars(select(PullRequestFile)).all()) == 2
-
-
-# ---------- same data as the inline webhook flow ----------
-
-def snapshot(db_session) -> dict:
-  pr = db_session.scalars(select(PullRequest)).one()
-  files = db_session.scalars(select(PullRequestFile).order_by(PullRequestFile.path)).all()
-  return {
-    "pr": (pr.number, pr.title, pr.status, pr.head_sha, pr.author_login, pr.created_at),
-    "files": [(f.path, f.status, f.additions, f.deletions, f.patch, f.blob_sha) for f in files],
-    "event_status": db_session.scalars(select(GitHubEvent.status)).one(),
-  }
-
-
-def test_jobs_store_the_same_data_as_the_inline_flow(client, db_session, fake_github):
-  payload = {"action": "opened", "repository": repo_payload(), "pull_request": pr_payload()}
-
-  assert send_webhook(client, "d-inline", "pull_request", payload).status_code == 200
-  inline = snapshot(db_session)
-
-  db_session.execute(
-    text("TRUNCATE github_events, pull_request_files, pull_requests, repositories CASCADE")
-  )
-  db_session.commit()
-
-  event = store_event(db_session, payload=payload, delivery_id="d-queued")
-  _, pull_request_id = process_stored_event(db_session, event.id)
-  asyncio.run(sync_files_for_pull_request(db_session, fake_github, pull_request_id))
-
-  assert snapshot(db_session) == inline
