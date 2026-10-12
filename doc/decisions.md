@@ -129,3 +129,31 @@ pool. Only work that is truly async (reading the request body) stays `async`. Re
 47 requests/s, p95 1.5 s, no failures. The rule for this codebase: no blocking call inside
 `async def`. Moving to async database drivers would be the alternative, but it changes every
 query and is not needed at this load.
+
+## Resilience: one retry layer, shared pause, circuit breaker (12 Oct 2026)
+
+**Retries in one layer only.** The job retries; the GitHub client makes one attempt per call.
+Retrying in both would multiply attempts (6 x 3 = 18 calls for one failure) and hide failures
+from the job's status. The client gets explicit timeouts (connect 5 s, read 15 s) and follows
+redirects (a renamed repository answers 301).
+
+**Rate limits pause instead of retrying.** A rate-limited response gives the time to wait
+(`Retry-After` or `X-RateLimit-Reset`). The first job that sees it stores a pause in Redis with
+that TTL, and every worker waits it out. Pauses do not use a job's failure budget, which
+travels with the message (`failures`).
+
+**Circuit breaker in Redis.** Opens after 5 transient failures in a row within 60 s, stays
+open 30 s, then lets exactly one call through (half-open) using `SET NX` on a probe key.
+State is in Redis so all worker processes share it. Options considered: a breaker per
+process (simple, but each process would learn about an outage separately and keep calling),
+or a library (pybreaker; its Redis storage still needs the same design decisions).
+
+**Bug found by fault injection.** Passing `max_retries=None` to Celery's `retry()` means "use
+the task's default" (it was 5), not "unlimited". Celery's counter includes pauses, so a job
+that waited out the open circuit several times was dropped while its row said `retrying`.
+Fix: the tasks are declared with `max_retries=None`, and if a retry cannot be scheduled the job
+becomes a dead letter instead of staying `retrying`.
+
+**Trade-offs.** A half-open probe that hangs holds the probe key until it expires (30 s). The
+breaker counts failures from any PR, so one broken repository could open it for all; scoping
+it per repository was not needed yet.

@@ -1,4 +1,5 @@
 import os
+import random
 
 import httpx
 import pytest
@@ -50,17 +51,21 @@ class FakeGitHubClient:
     ]
     self.should_fail = False  # fail every call
     self.fail_times = 0  # or fail only the next N calls
+    self.failure_rate = 0.0  # or fail this share of calls at random (fault injection)
+    self.random = random.Random(7)  # fixed seed: the same "random" failures on every run
     self.status_code = 503
+    self.headers: dict[str, str] = {}  # e.g. rate-limit headers on the failure response
     self.calls = []
 
   async def get_pull_request_files(self, repo_full_name: str, pr_number: int) -> list[dict]:
     self.calls.append((repo_full_name, pr_number))
-    if self.should_fail or self.fail_times > 0:
+    unlucky = self.failure_rate and self.random.random() < self.failure_rate
+    if self.should_fail or self.fail_times > 0 or unlucky:
       self.fail_times = max(0, self.fail_times - 1)
       request = httpx.Request("GET", "https://api.github.com/fake")
-      response = httpx.Response(self.status_code, request=request)
+      response = httpx.Response(self.status_code, request=request, headers=self.headers)
       raise httpx.HTTPStatusError(f"{self.status_code} error", request=request, response=response)
-    return self.files
+    return [dict(file) for file in self.files]
 
 
 @pytest.fixture(scope="session")
@@ -138,9 +143,15 @@ def worker(monkeypatch, db_session, redis_client, fake_github, fake_broker):
 
   import app.jobs as jobs
 
+  from app.integrations.github.guard import GitHubGuard
+
   monkeypatch.setattr(jobs, "SessionLocal", lambda: nullcontext(db_session))
   monkeypatch.setattr(jobs, "redis_client", redis_client)
   monkeypatch.setattr(jobs, "get_github_client", lambda: fake_github)
+  # Eager retries ignore countdowns, so an open circuit would loop; the breaker has its own tests.
+  monkeypatch.setattr(
+    jobs, "get_github_guard", lambda: GitHubGuard(redis_client, failure_threshold=10_000)
+  )
 
   class Worker:
     def __init__(self) -> None:

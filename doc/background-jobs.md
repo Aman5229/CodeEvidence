@@ -50,20 +50,44 @@ with `POST /jobs/{job_id}/retry` once the cause is fixed.
 
 ## Retry policy
 
-| Error | Retried? |
-|---|---|
-| Timeouts and connection errors (`httpx.TransportError`) | yes |
-| HTTP 429, 500, 502, 503, 504 | yes |
-| HTTP 401, 403, 404, 422 | no: it would fail the same way every time |
-| Errors in our own code or data (`KeyError`, `ValueError`, ...) | no: needs a fix, not a retry |
+Retries happen in one place only: the job (`run_tracked` in `app/jobs.py`). The GitHub client
+makes one attempt per call, so a failure is never retried at two levels (6 job attempts x 3
+client attempts would be 18 calls for one failure).
 
-- Up to **5 retries** (6 attempts in total), then the job is `failed`.
-- Wait before retry *n* (starting at 0): a random time between 0 and
-  `min(300 s, 5 s × 2^n)` ("full jitter"). Ceilings: 5, 10, 20, 40, 80 s.
-  The randomness spreads out jobs that failed at the same moment, so they do not all
-  hit GitHub again at the same instant.
-- GitHub's rate-limit 403 responses are not retried yet; they need the reset time from the
-  `X-RateLimit-*` headers, which is planned for the resilience milestone.
+| Error | What the job does |
+|---|---|
+| Timeouts and connection errors (`httpx.TransportError`) | retry with backoff; uses the failure budget |
+| HTTP 500, 502, 503, 504, and 429 without rate-limit headers | retry with backoff; uses the failure budget |
+| Rate limit: 403/429 with `Retry-After`, or `X-RateLimit-Remaining: 0` | **pause** until the reset time; does not use the budget |
+| GitHub paused for every worker (rate limit or open circuit) | **pause** for the remaining time; does not use the budget |
+| HTTP 401, 403 (without rate-limit headers), 404, 422 | no retry: fails at once |
+| Errors in our own code or data (`KeyError`, `ValueError`, ...) | no retry: needs a fix |
+
+- **Failure budget:** 5 retries after real failures (6 attempts), then the job is `failed`.
+  The count travels with the job's message (`{"job_id", "failures"}`); waiting out a pause
+  does not use it.
+- **Backoff:** before retry *n* (from 0), a random wait between 0 and `min(300 s, 5 s × 2^n)`
+  ("full jitter"); ceilings 5, 10, 20, 40, 80 s.
+- **Pauses** wait the time GitHub asked for, plus up to 1 s of jitter, capped at 900 s. The cap
+  keeps every wait well below Redis's visibility timeout (1 hour): a message held longer than
+  that would be delivered a second time.
+- **Celery's own retry limit is off** (`max_retries=None` on the tasks). Celery counts every
+  retry, pauses included, and would drop a job that paused a few times; the fault-injection
+  test found this (see decisions.md).
+
+## Protecting GitHub: rate-limit pause and circuit breaker
+
+`app/integrations/github/guard.py`, with its state in Redis so every worker process shares it.
+
+- **Rate-limit pause.** When one job gets a rate-limit response, it sets
+  `github:rate_limited` with a TTL until GitHub's reset time. Every job checks this key before
+  calling GitHub and pauses instead, so no worker keeps hitting a rate-limited API.
+- **Circuit breaker.** States: **closed** (normal) → **open** after 5 transient failures in a
+  row within 60 s (a success resets the count) → after 30 s **half-open**: exactly one job is
+  let through to test GitHub, the others keep waiting → **closed** if it succeeds, **open**
+  again if it fails. While open, jobs pause without calling GitHub, so a GitHub outage costs
+  no calls and no failure budget. Scattered failures (for example 30% at random) rarely come
+  5 in a row; they are handled by retries, and the breaker stays closed.
 
 ## Failure modes
 
@@ -72,7 +96,10 @@ with `POST /jobs/{job_id}/retry` once the cause is fixed.
 | Bad signature, bad JSON, missing header | 401 / 400, nothing stored | GitHub shows the delivery as failed |
 | Redis unreachable when queueing | Event and job marked `failed`, webhook returns 503 | GitHub's "Redeliver" queues it again |
 | Same delivery sent twice at once | Unique constraint; the second request gets 200 `duplicate_ignored` | nothing to do |
-| GitHub slow, overloaded or down | `sync_pr_files` retried with backoff; the PR row is already saved | automatic; after 6 attempts a dead letter, `POST /jobs/{id}/retry` |
+| GitHub slow or failing now and then | `sync_pr_files` retried with backoff; the PR row is already saved | automatic; after 6 failed attempts a dead letter, `POST /jobs/{id}/retry` |
+| GitHub down (an outage) | Circuit opens after 5 failures in a row; jobs pause instead of calling; one test call every 30 s | automatic when GitHub recovers |
+| GitHub rate limit reached | Every worker pauses until GitHub's reset time | automatic |
+| Retry cannot be scheduled (Redis down) | Job marked `failed` (dead letter), never left `retrying` | `POST /jobs/{id}/retry` |
 | GitHub returns 404 / 401 | `sync_pr_files` failed at once (dead letter) | fix the cause, then `POST /jobs/{id}/retry` |
 | Worker killed mid-job | The job goes back on the queue and runs again (idempotent) | automatic |
 | Worker stopped (`docker compose stop`) | Warm shutdown: no new jobs, running jobs finish (up to 60 s, `stop_grace_period`) | automatic |
@@ -86,3 +113,17 @@ docker compose logs -f worker                               # job received / suc
 WORKER_CONCURRENCY=4 docker compose up -d worker            # more worker processes
 docker compose exec worker celery -A app.worker call app.jobs.ping   # is it alive?
 ```
+
+## Fault injection (proof)
+
+`tests/integration/test_queue_end_to_end.py` runs a real Celery worker against Redis with a
+fake GitHub:
+
+| Scenario | Result (12 Oct 2026) |
+|---|---|
+| 40 PR events, 30% of GitHub calls fail at random | all 80 jobs succeeded, every PR got its files; 62 GitHub calls, 22 failed and were retried |
+| 20 PR events, GitHub down for its first 12 calls, then healthy | all 40 jobs succeeded; the open circuit paused runs instead of calling GitHub |
+
+Both ran 6 times in a row without a failure after the Celery retry-limit fix (before it, the
+outage scenario lost a job in 5 of 6 runs).
+

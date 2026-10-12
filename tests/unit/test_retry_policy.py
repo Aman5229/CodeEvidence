@@ -3,7 +3,8 @@
 import httpx
 import pytest
 
-from app.jobs import RETRY_BASE_SECONDS, RETRY_MAX_SECONDS, is_retryable, retry_delay_seconds
+from app.integrations.github.guard import is_retryable
+from app.jobs import RETRY_BASE_SECONDS, RETRY_MAX_SECONDS, retry_delay_seconds
 
 
 def http_error(status: int) -> httpx.HTTPStatusError:

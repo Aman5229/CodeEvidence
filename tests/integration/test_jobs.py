@@ -210,3 +210,112 @@ def test_non_retryable_errors_are_not_retried(db_session, fake_broker, worker, f
   db_session.refresh(job)
   assert len(fake_github.calls) == 1
   assert (job.status, job.attempts) == ("failed", 1)
+
+
+# ---------- pauses (M5): rate limits and an open circuit do not use the failure budget ----------
+
+@pytest.fixture
+def captured_retry(monkeypatch):
+  """Record what the job asks Celery for, instead of retrying."""
+  from celery.exceptions import Retry
+
+  requests = []
+
+  def fake_retry(*, args, countdown, exc):
+    requests.append({"message": args[0], "countdown": countdown})
+    raise Retry(exc=exc)
+
+  monkeypatch.setattr(jobs.sync_pr_files, "retry", fake_retry)
+  return requests
+
+
+def run_sync(db_session, fake_broker, worker, message_extra=None):
+  job = sync_job(db_session, fake_broker, worker)
+  try:
+    jobs.sync_pr_files({"job_id": job.id, **(message_extra or {})})
+  except Exception:
+    pass
+  db_session.refresh(job)
+  return job
+
+
+def test_transient_failure_counts_against_the_budget(db_session, fake_broker, worker,
+                                                     fake_github, captured_retry):
+  fake_github.fail_times = 1
+
+  job = run_sync(db_session, fake_broker, worker, {"failures": 2})
+
+  assert job.status == "retrying"
+  assert captured_retry[0]["message"] == {"job_id": job.id, "failures": 3}
+  assert 0 <= captured_retry[0]["countdown"] <= 5 * 2**2
+
+
+def test_rate_limit_pauses_until_reset_without_using_the_budget(db_session, fake_broker, worker,
+                                                                fake_github, captured_retry):
+  import time
+
+  fake_github.fail_times = 1
+  fake_github.status_code = 403
+  fake_github.headers = {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(int(time.time()) + 60)}
+
+  job = run_sync(db_session, fake_broker, worker, {"failures": 2})
+
+  assert job.status == "retrying"
+  assert captured_retry[0]["message"] == {"job_id": job.id, "failures": 2}  # unchanged
+  assert 55 <= captured_retry[0]["countdown"] <= 62
+
+
+def test_job_waits_while_another_worker_hit_the_rate_limit(db_session, fake_broker, worker,
+                                                           fake_github, redis_client,
+                                                           captured_retry):
+  redis_client.set("github:rate_limited", "1", ex=40)
+
+  job = run_sync(db_session, fake_broker, worker)
+
+  assert fake_github.calls == []  # GitHub was not called at all
+  assert job.status == "retrying"
+  assert captured_retry[0]["message"]["failures"] == 0
+  assert 39 <= captured_retry[0]["countdown"] <= 41
+
+
+def test_out_of_budget_after_max_failures(db_session, fake_broker, worker, fake_github,
+                                          captured_retry):
+  fake_github.fail_times = 1
+
+  job = run_sync(db_session, fake_broker, worker, {"failures": jobs.MAX_RETRIES})
+
+  assert job.status == "failed"
+  assert captured_retry == []
+
+
+def test_pause_is_capped_below_the_broker_visibility_timeout(db_session, fake_broker, worker,
+                                                             fake_github, captured_retry):
+  fake_github.fail_times = 1
+  fake_github.status_code = 429
+  fake_github.headers = {"retry-after": "7200"}  # two hours
+
+  run_sync(db_session, fake_broker, worker)
+
+  assert captured_retry[0]["countdown"] <= jobs.MAX_PAUSE_SECONDS + 1
+
+
+def test_job_that_cannot_be_rescheduled_becomes_a_dead_letter(db_session, fake_broker, worker,
+                                                              fake_github, monkeypatch):
+  """If scheduling the retry fails (e.g. Redis down), the job must not stay 'retrying' forever."""
+
+  def broken_retry(**kwargs):
+    raise ConnectionError("Redis is unreachable")
+
+  monkeypatch.setattr(jobs.sync_pr_files, "retry", broken_retry)
+  fake_github.fail_times = 1
+
+  job = run_sync(db_session, fake_broker, worker)
+
+  assert job.status == "failed"
+  assert "Redis is unreachable" in job.last_error
+
+
+def test_celery_does_not_cap_retries_itself():
+  """Celery's own retry counter also counts pauses; only the job's failure budget may stop it."""
+  assert jobs.process_event.max_retries is None
+  assert jobs.sync_pr_files.max_retries is None

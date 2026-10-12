@@ -28,7 +28,8 @@ A Celery worker then does the work in two jobs:
   GitHub's 3,000-file limit) and replaces the stored file list.
 
 If GitHub fails, only the file sync fails and is retried with backoff (up to 6 attempts); the
-PR row is already saved. Jobs that still fail become dead letters (`GET /jobs`). If the job cannot
+PR row is already saved. Rate limits pause every worker until GitHub's reset time, and a
+circuit breaker stops calling GitHub during an outage (see [doc/background-jobs.md](doc/background-jobs.md)). Jobs that still fail become dead letters (`GET /jobs`). If the job cannot
 be queued (Redis unreachable), the event is marked `failed` and the webhook returns `503`,
 so the delivery can be retried with GitHub's **Redeliver** button. A redelivered failed
 event is queued again.
@@ -267,7 +268,6 @@ every run. Real repositories are never touched.
 ## Known limitations
 
 - **No transactional outbox.** If the app crashes between committing an event and queueing its job, the job stays `queued` and never runs. Such jobs can be found with `GET /jobs?status=queued`, but there is no one-click recovery for them yet. See [doc/background-jobs.md](doc/background-jobs.md).
-- **GitHub rate-limit 403s are not retried yet**, and redirects for renamed repositories are not followed.
 - **Only `pull_request` events are processed.** Other events are stored as `received`.
 - **Repository metadata is not refreshed** after the first insert (e.g. a renamed repo keeps its old name).
 - `patch_truncated` and `is_stale` on files are placeholders, not yet computed.

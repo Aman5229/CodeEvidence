@@ -4,9 +4,12 @@ from pydantic import BaseModel, ConfigDict
 
 
 class JobMessage(BaseModel):
-  """What travels through Redis: only the job's id. Its payload is in the job_runs row."""
+  """What travels through Redis: the job's id (its payload is in the job_runs row) and how
+  many times it has failed so far. `failures` has a default, so messages sent by older code
+  without it are still valid."""
 
   job_id: int
+  failures: int = 0
 
 
 class ProcessEventPayload(BaseModel):
