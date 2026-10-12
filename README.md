@@ -266,4 +266,3 @@ every run. Real repositories are never touched.
 - **Only `pull_request` events are processed.** Other events are stored as `received`.
 - **Repository metadata is not refreshed** after the first insert (e.g. a renamed repo keeps its old name).
 - `patch_truncated` and `is_stale` on files are placeholders, not yet computed.
-- Two simultaneous deliveries with the same ID could race on the unique constraint; rare in practice.

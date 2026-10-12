@@ -15,6 +15,10 @@ def upsert_pull_request(db: Session, repo: Repository, pr_payload: dict) -> Pull
   ).scalar_one_or_none()
 
   if existing is not None:
+    incoming_updated_at = parse_iso_timestamp(pr_payload["updated_at"])
+    if incoming_updated_at < existing.updated_at:
+      return existing  # an older event arrived late: never overwrite newer data
+
     existing.title = pr_payload["title"]
     existing.body = pr_payload.get("body")
     existing.base_branch = pr_payload["base"]["ref"]

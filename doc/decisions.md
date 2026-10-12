@@ -67,3 +67,33 @@ embeddings, LLM review) takes minutes. The work has to move to a background work
 - `kombu`, Celery's messaging library, requires `redis < 6.5`, so the Redis client moves
   from 8.x to 6.x. The app only uses basic commands, which 6.x supports.
 - At-least-once means a job can run twice. Jobs must be idempotent, which is planned.
+
+## Idempotent jobs: repeatable steps, not skip-on-redelivery (12 Oct 2026)
+
+**Context.** Jobs are acknowledged after they finish (at-least-once delivery). A worker that
+crashes after doing the work but before acknowledging gets the same job again. Two worker
+processes can also finish events for the same PR in any order.
+
+**Options considered**
+- **Skip a job whose event is already processed.** Simple, but it can lose follow-up work:
+  if the worker crashed after the commit but before queueing `sync_pr_files`, the re-run
+  would skip and the files would never sync.
+- **Make every step safe to repeat.** Upserts instead of inserts, "replace the PR's files"
+  instead of "add files", and never let older data overwrite newer data.
+
+**Choice: make every step safe to repeat.**
+
+| Step | Why running it twice is safe |
+|---|---|
+| Webhook, same delivery id | Duplicate check, backed by a unique constraint. A simultaneous duplicate hits the constraint and is answered as a duplicate (200). |
+| `upsert_repository` | Returns the existing row. |
+| `upsert_pull_request` | Ignores a payload whose `updated_at` is older than the stored row. |
+| `mark_event_completed` | Keeps the first `processed_at`. |
+| `sync_pr_files` | Replaces the PR's files with GitHub's current list. |
+
+**Trade-offs**
+- A repeated job repeats its work, for example one extra GitHub call for the file sync.
+- Ordering relies on GitHub's `updated_at`, which has one-second precision. Two changes in the
+  same second are treated as the same version, and the later one to be processed wins.
+- Two file syncs for the same PR running at the same moment can conflict on the
+  `(pull_request_id, path)` unique constraint. One fails and needs a retry (planned next).

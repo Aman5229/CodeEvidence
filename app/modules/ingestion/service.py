@@ -1,6 +1,7 @@
 import logging
 
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from app.db.models import GitHubEvent, PullRequest, Repository
 from app.integrations.github.client import GitHubClient
@@ -34,13 +35,17 @@ def accept_github_event(
     return None
 
   if event is None:
-    event = record_event(
-      db,
-      delivery_id=delivery_id,
-      event_type=event_type,
-      action=payload.get("action"),
-      payload=payload,
-    )
+    try:
+      event = record_event(
+        db,
+        delivery_id=delivery_id,
+        event_type=event_type,
+        action=payload.get("action"),
+        payload=payload,
+      )
+    except IntegrityError:
+      db.rollback()
+      return None  # the same delivery arrived twice at once; the other request stored it
   else:
     logger.info("Retrying previously failed delivery %s", delivery_id)
   db.commit()
