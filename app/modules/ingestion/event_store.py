@@ -44,7 +44,7 @@ def mark_event_completed(event: GitHubEvent, *, status: str, repository_id: int 
   event.status = status
   event.repository_id = repository_id
   event.error_message = None
-  if status == STATUS_PROCESSED:
+  if status == STATUS_PROCESSED and event.processed_at is None:
     event.processed_at = utc_now()
 
 
