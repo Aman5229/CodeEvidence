@@ -1,0 +1,5 @@
+{
+  "shown_precision": 0.6,
+  "shown_grounded": 0.95,
+  "hallucinations_caught": 0.9
+}

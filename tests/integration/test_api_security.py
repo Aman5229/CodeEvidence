@@ -20,9 +20,18 @@ PROTECTED = [
   "/repositories/1/stats",
   "/repositories/1/pull-requests",
   "/pull-requests/1",
+  "/pull-requests/1/risk",
+  "/pull-requests/1/review",
+  "/pull-requests/1/reviews",
+  "/pull-requests/insights?ids=1",
+  "/overview",
+  "/repositories/1/index",
   "/events/d-1",
   "/jobs",
 ]
+
+# Endpoints that change something: also behind the API key
+PROTECTED_WRITES = ["/pull-requests/1/review", "/repositories/1/index", "/findings/1/feedback"]
 
 
 # ---------- API keys ----------
@@ -36,6 +45,11 @@ def test_read_api_requires_a_key(client, path):
     "code": "unauthorized",
     "message": "Missing API key: send it in the X-API-Key header",
   }
+
+
+@pytest.mark.parametrize("path", PROTECTED_WRITES)
+def test_write_endpoints_require_a_key(client, path):
+  assert client.post(path, headers={"X-API-Key": ""}, json={"verdict": "useful"}).status_code == 401
 
 
 def test_unknown_key_is_rejected(client):

@@ -1,3 +1,5 @@
+import base64
+
 import httpx
 
 from app.core.config import settings
@@ -80,6 +82,69 @@ class GitHubClient:
         page += 1
 
     return pulls[:limit]
+
+  async def get_tree(self, repo_full_name: str, ref: str) -> list[dict]:
+    """Every file of the repository at `ref` (path, blob sha, size). GitHub stops at about
+    100,000 entries and sets `truncated`; that is far more than we index."""
+    url = f"{GITHUB_API_URL}/repos/{repo_full_name}/git/trees/{ref}"
+
+    async with self._http() as client:
+      response = await client.get(url, headers=self._headers, params={"recursive": "1"})
+      response.raise_for_status()
+      return [entry for entry in response.json()["tree"] if entry["type"] == "blob"]
+
+  async def get_blob(self, repo_full_name: str, blob_sha: str) -> bytes:
+    """A file's raw bytes by content hash (base64 in GitHub's answer)."""
+    url = f"{GITHUB_API_URL}/repos/{repo_full_name}/git/blobs/{blob_sha}"
+
+    async with self._http() as client:
+      response = await client.get(url, headers=self._headers)
+      response.raise_for_status()
+      body = response.json()
+      if body.get("encoding") != "base64":
+        return body["content"].encode("utf-8")
+      return base64.b64decode(body["content"])
+
+  async def create_review(
+    self, repo_full_name: str, pr_number: int, *, commit_id: str, body: str, comments: list[dict]
+  ) -> dict:
+    """Post a review with inline comments. Each comment: path, line (in the new file), side
+    "RIGHT", body. event COMMENT: it neither approves nor blocks the PR."""
+    url = f"{GITHUB_API_URL}/repos/{repo_full_name}/pulls/{pr_number}/reviews"
+
+    async with self._http() as client:
+      response = await client.post(
+        url,
+        headers=self._headers,
+        json={"commit_id": commit_id, "body": body, "event": "COMMENT", "comments": comments},
+      )
+      response.raise_for_status()
+      return response.json()
+
+  async def list_review_comments(self, repo_full_name: str, pr_number: int) -> list[dict]:
+    """Every inline review comment on the PR, from anyone."""
+    url = f"{GITHUB_API_URL}/repos/{repo_full_name}/pulls/{pr_number}/comments"
+    comments: list[dict] = []
+
+    async with self._http() as client:
+      for page in range(1, MAX_FILE_PAGES + 1):
+        response = await client.get(url, headers=self._headers, params={"per_page": 100, "page": page})
+        response.raise_for_status()
+        batch = response.json()
+        comments.extend(batch)
+        if len(batch) < 100:
+          break
+
+    return comments
+
+  async def list_comment_reactions(self, repo_full_name: str, comment_id: int) -> list[dict]:
+    """Reactions (+1, -1, ...) on one review comment. GitHub sends no webhook for these."""
+    url = f"{GITHUB_API_URL}/repos/{repo_full_name}/pulls/comments/{comment_id}/reactions"
+
+    async with self._http() as client:
+      response = await client.get(url, headers=self._headers, params={"per_page": 100})
+      response.raise_for_status()
+      return response.json()
 
 
 def get_github_client() -> GitHubClient:

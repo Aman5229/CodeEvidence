@@ -26,6 +26,7 @@ class PullRequestSummary(BaseModel):
   model_config = ConfigDict(from_attributes=True)
 
   id: int
+  repository_id: int
   number: int
   title: str
   author_login: str | None

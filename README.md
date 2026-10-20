@@ -4,9 +4,10 @@
 
 A repository-aware, evaluation-driven AI code review platform.
 
-> **Current scope:** CodeEvidence securely receives GitHub pull request webhooks,
-> stores repositories, pull requests, changed files and the raw events, and
-> serves them through a read API with cursor pagination (see [doc/api.md](doc/api.md)).
+> **Current scope:** CodeEvidence receives GitHub pull request webhooks, stores PRs and
+> their changed files, scores each PR's risk (rules plus a trained model), retrieves related
+> code from the repository, and writes an AI review whose every finding is checked against
+> the evidence before anyone sees it. A React dashboard shows it all.
 
 ---
 
@@ -34,6 +35,17 @@ be queued (Redis unreachable), the event is marked `failed` and the webhook retu
 so the delivery can be retried with GitHub's **Redeliver** button. A redelivered failed
 event is queued again.
 
+## The product: risk, retrieval, AI review
+
+| Part | What it does | Docs |
+|---|---|---|
+| Risk score | Rule-based score 0-100 with reasons, computed after each file sync | [doc/risk.md](doc/risk.md) |
+| ML risk model | Predicts "closed without merge"; trained on a time split, calibrated, served next to the rules with a fallback | [doc/ml.md](doc/ml.md) |
+| Code retrieval | tree-sitter chunks, local embeddings in pgvector, hybrid vector + keyword search, deterministic signals, a token-budgeted evidence bundle | [doc/retrieval.md](doc/retrieval.md) |
+| AI review | Claude proposes findings as JSON; verification drops anything the evidence does not support; ranked, capped, cached, cost-budgeted, injection-hardened | [doc/review.md](doc/review.md) |
+| GitHub feedback and evaluation | Idempotent inline comments on a sandbox repo, feedback capture, labelled-set metrics, a replay quality gate in CI | [doc/evaluation.md](doc/evaluation.md) |
+| Dashboard | React + TypeScript over the API | [frontend/README.md](frontend/README.md) |
+
 ## API
 
 | Method | Path | Returns |
@@ -43,6 +55,11 @@ event is queued again.
 | GET | `/repositories/{id}/stats` | PR counts, merge rate, bot share, median size and time to close |
 | GET | `/repositories/{id}/pull-requests` | PRs, newest first; filters: `status`, `merged`, `author`, `is_bot`, `created_after`, `created_before` |
 | GET | `/pull-requests/{id}` | One PR with changed files and totals (`?include_patch=true` adds the diffs) |
+| GET | `/pull-requests/{id}/risk` | Risk score 0-100 with its reasons and features, plus the ML model's prediction ([doc/risk.md](doc/risk.md)) |
+| GET | `/pull-requests/{id}/review` | The latest AI review: summary and verified, ranked findings with their evidence |
+| POST | `/pull-requests/{id}/review` | Queue an AI review (an identical earlier one is reused at no cost) |
+| POST | `/repositories/{id}/index` | Queue indexing of the repository's code for retrieval |
+| POST | `/findings/{id}/feedback` | Rate a finding: `{"verdict": "useful" \| "not_useful"}` |
 | POST | `/webhooks/github` | Signed GitHub webhook receiver (stores, queues, answers 202) |
 | GET | `/events/{delivery_id}` | A delivery and the status of every job it started |
 | GET | `/jobs` | Background jobs; by default the dead letters (`status=failed`) |
@@ -100,9 +117,16 @@ app/
   db/                          # engine/session, SQLAlchemy models
   schemas/                     # Pydantic response models (the API's output shapes)
   api/routes/                  # thin HTTP layer: health, webhooks, repositories, pull requests
-  integrations/github/         # the only code that talks to GitHub: signature, API client
+  integrations/github/         # the only code that talks to GitHub: signature, API client, guard
   modules/ingestion/           # ingestion logic: event store, repo/PR/file sync, service flow
-doc/                           # API design, performance measurements, decision log
+  modules/risk/                # rule-based risk score
+  modules/ml/                  # ML risk model: dataset, training, serving, drift
+  modules/code/                # diff parser, filters, chunking, embeddings, retrieval, evidence
+  modules/review/              # LLM provider, prompts, verification, ranking, publishing, evaluation
+frontend/                      # React + TypeScript dashboard (Vite)
+eval/                          # recorded review cases and quality thresholds (CI gate)
+models/                        # the trained risk model file
+doc/                           # API design, measurements, decision log, ML/retrieval/review docs
 migrations/                    # Alembic schema migrations
 scripts/                       # dev tools and sample payloads (not app code)
 tests/
@@ -120,10 +144,19 @@ Dockerfile, docker-compose.yml # container build and local stack (app, worker, P
 | `pull_requests` | One row per PR, unique per repository, updated as the PR changes |
 | `pull_request_files` | Changed files of a PR: path, status, additions/deletions, patch |
 | `github_events` | Every accepted webhook: raw payload, status, error message, timestamps |
+| `job_runs` | Every background job: status, attempts, last error (failed rows are dead letters) |
+| `api_keys` | API keys, stored as SHA-256 hashes |
+| `pull_request_risks` | Each PR's features, rule score with reasons, and the model's prediction |
+| `file_blobs` | File contents by blob SHA (fetched once) |
+| `code_chunks` | Functions and classes of indexed repositories, with embeddings (pgvector) and full-text search |
+| `reviews` | AI review runs: prompt version, model, tokens, cost, latency, cache key, evidence |
+| `review_findings` | Every proposed finding, kept or dropped (with the reason), rank and GitHub comment id |
+| `finding_feedback` | Reactions, replies, resolved threads and dashboard votes on findings |
 
 ## Tech stack
 
-Python 3.10+ · FastAPI · SQLAlchemy 2.x · PostgreSQL 16 · Redis 7 (Docker) · Celery · Alembic · httpx · pytest
+Python 3.12 · FastAPI · SQLAlchemy 2.x · PostgreSQL 16 + pgvector · Redis 7 · Celery · Alembic · httpx · pytest ·
+scikit-learn · tree-sitter · sentence-transformers · Anthropic Claude · React + TypeScript (Vite, TanStack Query)
 
 ---
 
@@ -153,7 +186,7 @@ Stop with `Ctrl+C`. `docker compose down -v` also deletes the database volume.
 
 ### 1. Requirements
 
-- Python 3.10–3.12
+- Python 3.11–3.12
 - Docker (for PostgreSQL and Redis)
 - A GitHub personal access token with read access to pull requests
 
@@ -163,6 +196,7 @@ Stop with `Ctrl+C`. `docker compose down -v` also deletes the database volume.
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
+pip install -e ".[embeddings]"   # optional: the local embedding model (large: PyTorch)
 ```
 
 ### 3. Configure
@@ -180,6 +214,10 @@ Then fill in `.env`:
 | `CELERY_BROKER_URL` | Redis for the job queue, a separate database: `redis://localhost:6380/1` |
 | `GITHUB_WEBHOOK_SECRET` | Shared secret, must match the one set on the GitHub webhook |
 | `GITHUB_TOKEN` | Token used to fetch PR files from the GitHub API |
+| `ANTHROPIC_API_KEY` | *(optional)* For AI reviews; `LLM_PROVIDER=fake` runs without one |
+| `PUBLISH_REPOSITORIES` | *(optional)* The only repositories reviews are posted to, e.g. your sandbox |
+| `REVIEW_ON_SYNC`, `REVIEW_BUDGET_USD` | *(optional)* Review every synced PR automatically; spending cap per review |
+| `EMBEDDING_PROVIDER` | *(optional)* `local` (default) or `fake` |
 | `TEST_DATABASE_URL` | *(optional)* Test database; defaults to `codeevidence_test` on port 5433 |
 | `TEST_REDIS_URL` | *(optional)* Test Redis; defaults to database 15 on port 6380, so tests never touch the app's cache |
 
@@ -251,7 +289,8 @@ GitHub must be able to reach your machine, so expose port 8000 with a tunnel
 - **Payload URL:** `<your-tunnel-url>/webhooks/github`
 - **Content type:** `application/json`
 - **Secret:** the same value as `GITHUB_WEBHOOK_SECRET`
-- **Events:** *Pull requests*
+- **Events:** *Pull requests*; for feedback on posted reviews also *Pull request review
+  comments* and *Pull request review threads*
 
 ## Synthetic data for load testing
 
@@ -273,6 +312,6 @@ every run. Real repositories are never touched.
 ## Known limitations
 
 - **No transactional outbox.** If the app crashes between committing an event and queueing its job, the job stays `queued` and never runs. Such jobs can be found with `GET /jobs?status=queued`, but there is no one-click recovery for them yet. See [doc/background-jobs.md](doc/background-jobs.md).
-- **Only `pull_request` events are processed.** Other events are stored as `received`.
+- **Only `pull_request` events and replies or resolutions on our review comments are processed.** Other events are stored as `received`.
 - **Repository metadata is not refreshed** after the first insert (e.g. a renamed repo keeps its old name).
 - `patch_truncated` and `is_stale` on files are placeholders, not yet computed.

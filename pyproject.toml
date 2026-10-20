@@ -2,7 +2,7 @@
 name = "codeevidence"
 version = "0.1.0"
 description = "Repository-aware AI code intelligence and review platform"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.11,<3.13"
 
 dependencies = [
     "fastapi>=0.115,<1",
@@ -15,6 +15,12 @@ dependencies = [
     "redis>=6.0,<6.5",
     "celery[redis]>=5.6,<6",
     "prometheus-client>=0.20,<1",
+    "scikit-learn>=1.6,<2",
+    "pgvector>=0.3,<1",
+    "tree-sitter>=0.23,<1",
+    "tree-sitter-python>=0.23,<1",
+    "tree-sitter-javascript>=0.23,<1",
+    "anthropic>=0.40,<1",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +31,11 @@ dev = [
 
 loadtest = [
     "locust>=2.40,<3",
+]
+
+# The real embedding model (M10). Large (PyTorch), so tests and CI use the fake embedder.
+embeddings = [
+    "sentence-transformers>=3,<6",
 ]
 
 analysis = [

@@ -17,6 +17,7 @@ from app.modules.ingestion.event_store import (
 from app.modules.ingestion.file_sync import sync_pull_request_files
 from app.modules.ingestion.pull_request_sync import upsert_pull_request
 from app.modules.ingestion.repository_sync import upsert_repository
+from app.modules.review.feedback import FEEDBACK_EVENTS, feedback_from_webhook
 
 logger = logging.getLogger(__name__)
 
@@ -65,10 +66,13 @@ def process_stored_event(db: Session, event_id: int) -> tuple[int | None, int | 
     repo_payload = event.payload.get("repository")
     repo = upsert_repository(db, repo_payload) if repo_payload else None
     pr = None
+    feedback_recorded = 0
     if event.event_type == "pull_request" and repo is not None:
       pr = upsert_pull_request(db, repo, event.payload["pull_request"])
+    elif event.event_type in FEEDBACK_EVENTS:  # replies to our review comments, resolved threads
+      feedback_recorded = feedback_from_webhook(db, event.event_type, event.payload)
 
-    status = STATUS_PROCESSED if pr is not None else STATUS_RECEIVED
+    status = STATUS_PROCESSED if pr is not None or feedback_recorded else STATUS_RECEIVED
     mark_event_completed(event, status=status, repository_id=repo.id if repo else None)
     db.commit()
   except Exception as error:

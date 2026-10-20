@@ -22,6 +22,18 @@ class SyncPullRequestFilesPayload(BaseModel):
   pull_request_id: int
 
 
+class IndexRepositoryPayload(BaseModel):
+  repository_id: int
+
+
+class ReviewPullRequestPayload(BaseModel):
+  pull_request_id: int
+
+
+class PublishReviewPayload(BaseModel):
+  review_id: int
+
+
 class JobRunOut(BaseModel):
   model_config = ConfigDict(from_attributes=True)
 

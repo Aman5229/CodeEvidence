@@ -1,0 +1,45 @@
+{
+  "name": "sql-injection",
+  "note": "Synthetic case written by hand to exercise the pipeline; replace with recorded real reviews (scripts/record_eval_case.py).",
+  "risk_level": "medium",
+  "title": "Simplify user lookup",
+  "description": "Builds the query inline.",
+  "evidence": [
+    {
+      "id": "H1",
+      "kind": "hunk",
+      "path": "app/users.py",
+      "start_line": 10,
+      "end_line": 18,
+      "text": "@@ -10,5 +10,9 @@ from app.db import connect\n \n def find_user(db, name):\n-    return db.execute(\"SELECT * FROM users WHERE name = %s\", (name,))\n+    query = f\"SELECT * FROM users WHERE name = '{name}'\"\n+    return db.execute(query)\n+\n+def delete_user(db, user_id):\n+    db.execute(\"DELETE FROM users WHERE id = %s\", (user_id,))\n \n def list_users(db):",
+      "new_lines": [
+        12,
+        13,
+        14,
+        15,
+        16
+      ]
+    }
+  ],
+  "responses": [
+    "{\"findings\": [{\"path\": \"app/users.py\", \"line\": 12, \"severity\": \"high\", \"category\": \"security\", \"claim\": \"The user name is put into the SQL text with an f-string, so a name containing a quote can change the query (SQL injection).\", \"quote\": \"query = f\\\"SELECT * FROM users WHERE name = '{name}'\\\"\", \"evidence\": [\"H1\", \"S1\"], \"suggestion\": \"Keep the parameterised query: db.execute(\\\"... WHERE name = %s\\\", (name,)).\", \"confidence\": 0.95}, {\"path\": \"app/users.py\", \"line\": 13, \"severity\": \"high\", \"category\": \"security\", \"claim\": \"Passwords are no longer hashed before they are stored, so they are saved in plain text.\", \"quote\": \"hash_password(password)\", \"evidence\": [\"H1\"], \"suggestion\": \"Hash with bcrypt before saving.\", \"confidence\": 0.8}, {\"path\": \"app/users.py\", \"line\": 15, \"severity\": \"low\", \"category\": \"maintainability\", \"claim\": \"delete_user does not return anything, so callers cannot tell whether a user was deleted.\", \"quote\": \"def delete_user(db, user_id):\", \"evidence\": [\"H1\"], \"suggestion\": null, \"confidence\": 0.6}]}",
+    "The PR changes find_user in app/users.py to build its SQL query with an f-string instead of a parameter, and adds a delete_user function."
+  ],
+  "labels": [
+    {
+      "path": "app/users.py",
+      "quote": "query = f\"SELECT * FROM users WHERE name = '{name}'\"",
+      "label": "useful"
+    },
+    {
+      "path": "app/users.py",
+      "quote": "hash_password(password)",
+      "label": "not_grounded"
+    },
+    {
+      "path": "app/users.py",
+      "quote": "def delete_user(db, user_id):",
+      "label": "wrong"
+    }
+  ]
+}

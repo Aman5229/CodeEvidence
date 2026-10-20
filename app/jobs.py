@@ -17,12 +17,15 @@ from app.db.models import JobRun
 from app.db.redis import redis_client
 from app.db.session import SessionLocal
 from app.integrations.github.client import get_github_client
+from app.core.config import settings
 from app.integrations.github.guard import (
   GitHubGuard,
-  GitHubUnavailable,
+  ServiceUnavailable,
   is_retryable,
   rate_limit_wait_seconds,
 )
+from app.modules.code.embeddings import get_embedder
+from app.modules.code.indexing import index_repository as index_repository_code
 from app.modules.ingestion.service import process_stored_event, sync_files_for_pull_request
 from app.modules.job_runs import (
   create_job_run,
@@ -31,13 +34,24 @@ from app.modules.job_runs import (
   requeue_job_run,
   start_job_run,
 )
-from app.schemas.jobs import JobMessage, ProcessEventPayload, SyncPullRequestFilesPayload
+from app.modules.review.llm import LLMError, LLMGuard, get_llm
+from app.modules.review.publishing import publish_review as publish_review_to_github
+from app.modules.review.service import review_pull_request as review_pull_request_with_llm
+from app.modules.risk.service import compute_risk
+from app.schemas.jobs import (
+  IndexRepositoryPayload,
+  JobMessage,
+  ProcessEventPayload,
+  PublishReviewPayload,
+  ReviewPullRequestPayload,
+  SyncPullRequestFilesPayload,
+)
 from app.worker import celery_app
 
 logger = logging.getLogger(__name__)
 
 # Retries: exponential backoff with full jitter, for up to MAX_RETRIES real failures.
-# Pauses (GitHub rate-limited or circuit open) wait without using up that budget.
+# Pauses (GitHub or the LLM rate-limited, or a circuit open) wait without using up that budget.
 RETRY_BASE_SECONDS = 5
 RETRY_MAX_SECONDS = 300
 MAX_RETRIES = 5
@@ -50,18 +64,33 @@ def retry_delay_seconds(attempt: int) -> float:
   return random.uniform(0, min(RETRY_MAX_SECONDS, RETRY_BASE_SECONDS * 2**attempt))
 
 
+def pause_seconds(error: Exception) -> float | None:
+  """How long the service asked us to wait (rate limit or open circuit), if it did."""
+  if isinstance(error, ServiceUnavailable):
+    return error.retry_after
+  if isinstance(error, LLMError):
+    return error.retry_after
+  return rate_limit_wait_seconds(error)
+
+
+def should_retry(error: Exception) -> bool:
+  return is_retryable(error) or (isinstance(error, LLMError) and error.transient)
+
+
 def retry_countdown(error: Exception, failures: int) -> float:
   """How long to wait before the next try. Pauses get a little jitter so workers don't wake together."""
-  if isinstance(error, GitHubUnavailable):
-    return min(MAX_PAUSE_SECONDS, error.retry_after) + random.uniform(0, 1)
-  rate_limit_wait = rate_limit_wait_seconds(error)
-  if rate_limit_wait is not None:
-    return min(MAX_PAUSE_SECONDS, rate_limit_wait) + random.uniform(0, 1)
+  pause = pause_seconds(error)
+  if pause is not None:
+    return min(MAX_PAUSE_SECONDS, pause) + random.uniform(0, 1)
   return retry_delay_seconds(failures)
 
 
 def get_github_guard() -> GitHubGuard:
   return GitHubGuard(redis_client)
+
+
+def get_llm_guard() -> LLMGuard:
+  return LLMGuard(redis_client)
 
 
 # ---------- the worker side ----------
@@ -94,8 +123,8 @@ def _run(task: Task, received: JobMessage, handler, started: float) -> None:
       handler(db, job)
     except Exception as error:
       db.rollback()
-      paused = isinstance(error, GitHubUnavailable) or rate_limit_wait_seconds(error) is not None
-      will_retry = paused or (is_retryable(error) and received.failures < MAX_RETRIES)
+      paused = pause_seconds(error) is not None
+      will_retry = paused or (should_retry(error) and received.failures < MAX_RETRIES)
       fail_job_run(job, error, will_retry=will_retry)
       db.commit()
       outcome = "paused" if paused else "retrying" if will_retry else "failed"
@@ -144,7 +173,7 @@ def _process_event(db: Session, job: JobRun) -> None:
 def _sync_pr_files(db: Session, job: JobRun) -> None:
   payload = SyncPullRequestFilesPayload.model_validate(job.payload)
   guard = get_github_guard()
-  guard.before_call()  # raises GitHubUnavailable while rate-limited or the circuit is open
+  guard.before_call()  # raises ServiceUnavailable while rate-limited or the circuit is open
   try:
     repository_id = asyncio.run(
       sync_files_for_pull_request(db, get_github_client(), payload.pull_request_id)
@@ -153,7 +182,65 @@ def _sync_pr_files(db: Session, job: JobRun) -> None:
     guard.record_failure(error)
     raise
   guard.record_success()
+  compute_risk(db, payload.pull_request_id)  # needs the files, so it runs after the sync
   invalidate_pull_request(redis_client, repository_id, payload.pull_request_id)
+  if settings.review_on_sync:
+    enqueue_job(
+      db, review_pull_request, ReviewPullRequestPayload(pull_request_id=payload.pull_request_id), event_id=job.event_id
+    )
+
+
+def _guarded(guard: GitHubGuard, call):
+  """Run `call` through a guard: refuse while paused, record the outcome."""
+  guard.before_call()  # raises ServiceUnavailable while rate-limited or the circuit is open
+  try:
+    result = call()
+  except Exception as error:
+    guard.record_failure(error)
+    raise
+  guard.record_success()
+  return result
+
+
+def _index_repository(db: Session, job: JobRun) -> None:
+  payload = IndexRepositoryPayload.model_validate(job.payload)
+  result = _guarded(
+    get_github_guard(),
+    lambda: asyncio.run(index_repository_code(db, get_github_client(), get_embedder(), payload.repository_id)),
+  )
+  logger.info("Repository indexed", extra={"repository_id": payload.repository_id, **vars(result)})
+
+
+def _review_pull_request(db: Session, job: JobRun) -> None:
+  payload = ReviewPullRequestPayload.model_validate(job.payload)
+  github_guard, llm_guard = get_github_guard(), get_llm_guard()
+  llm = get_llm()  # first: a missing key or wrong provider fails before any slow work
+  llm_guard.before_call()
+  try:
+    review = _guarded(
+      github_guard,
+      lambda: asyncio.run(
+        review_pull_request_with_llm(
+          db, get_github_client(), get_embedder(), llm, payload.pull_request_id,
+          budget_usd=settings.review_budget_usd,
+        )
+      ),
+    )
+  except LLMError as error:
+    llm_guard.record_failure(error)  # the GitHub guard ignores LLM errors, and the reverse
+    raise
+  llm_guard.record_success()
+  logger.info(
+    "Pull request reviewed",
+    extra={"review_id": review.id, "status": review.status, "cost_usd": review.cost_usd, "cached": review.cached},
+  )
+  if review.status == "completed" and settings.publish_repositories:
+    enqueue_job(db, publish_review, PublishReviewPayload(review_id=review.id), event_id=job.event_id)
+
+
+def _publish_review(db: Session, job: JobRun) -> None:
+  payload = PublishReviewPayload.model_validate(job.payload)
+  _guarded(get_github_guard(), lambda: asyncio.run(publish_review_to_github(db, get_github_client(), payload.review_id)))
 
 
 @celery_app.task
@@ -177,9 +264,30 @@ def sync_pr_files(self, message: dict) -> None:
   run_tracked(self, message, _sync_pr_files)
 
 
+@celery_app.task(bind=True, max_retries=None)
+def index_repository(self, message: dict) -> None:
+  """Chunk and embed a repository's code for retrieval (only files changed since last time)."""
+  run_tracked(self, message, _index_repository)
+
+
+@celery_app.task(bind=True, max_retries=None)
+def review_pull_request(self, message: dict) -> None:
+  """AI review of a PR: evidence, LLM findings, verification, ranking."""
+  run_tracked(self, message, _review_pull_request)
+
+
+@celery_app.task(bind=True, max_retries=None)
+def publish_review(self, message: dict) -> None:
+  """Post a review's findings as inline comments on GitHub (allowed repositories only)."""
+  run_tracked(self, message, _publish_review)
+
+
 # ---------- the producer side ----------
 
-JOB_TASKS = {task.name.rsplit(".", 1)[-1]: task for task in (process_event, sync_pr_files)}
+JOB_TASKS = {
+  task.name.rsplit(".", 1)[-1]: task
+  for task in (process_event, sync_pr_files, index_repository, review_pull_request, publish_review)
+}
 
 
 def new_message(job_id: int) -> JobMessage:

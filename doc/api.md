@@ -102,3 +102,35 @@ updated_at, finished_at. How jobs are retried is described in [background-jobs.m
 Queues a failed job again, after its cause has been fixed. Returns 202 with the job, now `queued`.
 404 if the job does not exist; 409 if it is not `failed`; 503 if it could not be queued.
 
+### 10. GET /pull-requests/{pull_request_id}/risk
+The PR's risk score: score (0 to 100), level (low, medium or high), reasons (each with code,
+message and points), the features it was computed from, the rules version and computed_at.
+404 if the PR does not exist, or if its score is not computed yet (it is computed after the
+PR's files are synced). How the score works: [risk.md](risk.md).
+
+`model` holds the trained model's prediction, `{version, probability, flagged}`: the chance
+that the PR is closed without being merged, and whether it is above the model's threshold.
+It is `null` when no model is loaded; the rule score is always present ([ml.md](ml.md)).
+
+### 11. GET /pull-requests/{pull_request_id}/review
+The PR's latest AI review: `status` (`completed` or `budget_exceeded`), `summary`, and
+`findings` that passed verification, best first. Each finding has `rank`, `path`, `line`,
+`severity`, `category`, `claim`, `quote`, `suggestion`, `confidence`, the `evidence` items it
+cites (id, kind, path, lines, text) and its `feedback` counts. Also: `dropped_findings`,
+`prompt_version`, `model`, `cached`, `llm_calls`, tokens, `cost_usd`, `latency_ms`,
+`published_at`. 404 if the PR does not exist or has no review yet. How it works:
+[review.md](review.md).
+
+### 12. POST /pull-requests/{pull_request_id}/review
+Queues a review job and returns 202 with `{job_id, status}`. If the evidence, prompt and
+model are identical to an earlier completed review, its result is reused (no LLM call).
+404 for an unknown PR, 503 if the job cannot be queued.
+
+### 13. POST /repositories/{repository_id}/index
+Queues indexing of the repository's default branch for retrieval (202, `{job_id, status}`).
+Only files changed since the last run are fetched and embedded. 404, 503 as above.
+
+### 14. POST /findings/{finding_id}/feedback
+Body `{"verdict": "useful" | "not_useful"}`. Records a dashboard vote and returns 201 with
+the stored feedback. 404 for an unknown finding, 422 for another verdict.
+

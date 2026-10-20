@@ -4,10 +4,23 @@ x-app-env: &app-env
   CELERY_BROKER_URL: redis://redis:6379/1
   GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET}
   GITHUB_TOKEN: ${GITHUB_TOKEN}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
+  LLM_MODEL: ${LLM_MODEL:-claude-sonnet-5-5}
+  # A model on your Mac (Ollama), seen from inside the containers
+  LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  LLM_INPUT_USD_PER_MTOK: ${LLM_INPUT_USD_PER_MTOK:-3.0}
+  LLM_OUTPUT_USD_PER_MTOK: ${LLM_OUTPUT_USD_PER_MTOK:-15.0}
+  REVIEW_TOKEN_BUDGET: ${REVIEW_TOKEN_BUDGET:-12000}
+  REVIEW_BUDGET_USD: ${REVIEW_BUDGET_USD:-0.25}
+  REVIEW_ON_SYNC: ${REVIEW_ON_SYNC:-false}
+  PUBLISH_REPOSITORIES: ${PUBLISH_REPOSITORIES:-}
+  EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-local}
 
 services:
   postgres:
-    image: postgres:16
+    image: pgvector/pgvector:pg16
     container_name: codeevidence-postgres
     environment:
       POSTGRES_DB: codeevidence
@@ -56,6 +69,8 @@ services:
     build: .
     container_name: codeevidence-worker
     environment: *app-env
+    volumes:
+      - model_cache:/root/.cache/huggingface  # the embedding model, downloaded once
     depends_on:
       postgres:
         condition: service_healthy
@@ -68,3 +83,4 @@ services:
 
 volumes:
   postgres_data:
+  model_cache:

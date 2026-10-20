@@ -28,3 +28,5 @@ htmlcov/
 # Notebooks: keep practice files and Jupyter autosaves out
 notebooks/00_*.ipynb
 .ipynb_checkpoints/
+# Exported training data (rebuilt with scripts/export_risk_dataset.py)
+data/

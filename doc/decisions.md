@@ -190,3 +190,74 @@ logs (memory per request).
 **Bug found while checking in Docker.** The key script read the new row's attributes after its
 session had closed (`commit()` expires loaded objects), so it crashed before printing the
 key. It now prints inside the session.
+
+## Python 3.12 in Docker and CI (19 Oct 2026)
+
+scikit-learn and NumPy releases now need Python 3.11 or newer, so the image and CI moved
+from 3.10 to 3.12, the version used locally. `requires-python` is `>=3.11,<3.13`.
+
+## ML risk model: proxy label, time split, shadow mode (19 Oct 2026)
+
+**Label: closed without merge.** Available for every PR with no manual work; a proxy for
+risk, not risk itself. Better labels (reverts, follow-up fixes) need data work and come later.
+
+**Time-based split and time-ordered cross-validation.** A random split would train on the
+future and look better than it is. Calibration and the threshold use the newest part of the
+training set, never the test set.
+
+**Features rebuilt for training, not read from the risk table.** Rescoring compares a PR with
+all of its repository's PRs, including later ones: a leak. The dataset builder recomputes
+size and author history from earlier PRs only, with the same feature function the server uses.
+
+**Served in shadow mode with a rule fallback.** The model's probability is stored and shown
+next to the rule score, which stays the primary answer. No model file means rules only.
+**The model file is a pickle** (joblib): only files this project trained are ever loaded.
+
+## Retrieval: pgvector, HNSW, hybrid with RRF, a local model (19 Oct 2026)
+
+**pgvector instead of a vector database.** The chunks live next to the data they belong to,
+in the database we already run and back up; joins and filters by repository are plain SQL.
+A separate vector store (Qdrant, Pinecone) is worth it at far larger scale.
+
+**HNSW index, cosine distance.** No training step and good recall as rows are added;
+IVFFlat needs data to train on and degrades without rebuilds.
+
+**Hybrid retrieval merged with reciprocal rank fusion.** Vector search finds similar meaning,
+keyword search finds the same names; RRF merges ranks, so no score scaling to tune.
+
+**Local open-source embeddings** (`BAAI/bge-small-en-v1.5`, 384 dimensions): free, private,
+CPU-only. Behind an interface with a deterministic fake, used in every test.
+
+**Chunks follow the syntax tree** (tree-sitter), so a hit is a whole function with its
+name and line range; windows only as a fallback.
+
+## AI review: Claude, verification before ranking, cost guards (19 Oct 2026)
+
+**Anthropic Claude behind a provider interface,** with a fake provider in all tests and CI.
+
+**Findings must quote the code they are about.** That makes every claim checkable with plain
+string matching; findings that do not check out are dropped (and stored, to measure the
+hallucination rate). No second LLM call for verification: deterministic checks first.
+
+**Prompt injection:** PR content only in the user message, inside a tag named after a hash
+of that content, with a system rule never to follow instructions in it; the model has no
+tools; verification drops anything not about added lines.
+
+**Per-review budget checked before each call** (worst case: prompt + full output), a clean
+`budget_exceeded` stop, the M5 retry/pause/breaker patterns reused (`LLMGuard`), and a
+content-addressed cache (hash of the exact model input) so a re-run costs nothing.
+
+## Publishing reviews: a token now, a GitHub App later (19 Oct 2026)
+
+**A fine-grained token limited to one sandbox repository,** plus an allowlist in the app
+(`PUBLISH_REPOSITORIES`). A GitHub App (its own bot identity, per-installation tokens and
+permissions) is the right design for other people's repositories; not needed for a sandbox.
+
+**Idempotency by a hidden marker in each comment** (a hash of path, category and quoted
+code), checked against the PR's existing comments before posting. GitHub has no
+idempotency keys, so the state on GitHub itself is the source of truth.
+
+**Evaluation gate by record and replay.** Real model answers are recorded once; CI replays
+them through the production pipeline for free and fails when quality drops below fixed
+thresholds. A test breaks verification on purpose to prove the gate catches it.
+

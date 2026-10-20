@@ -1,0 +1,33 @@
+{
+  "name": "malformed-then-repaired",
+  "note": "Synthetic case written by hand to exercise the pipeline; replace with recorded real reviews (scripts/record_eval_case.py).",
+  "risk_level": "medium",
+  "title": "Evict expired cache entries",
+  "description": "Deletes expired entries on read.",
+  "evidence": [
+    {
+      "id": "H1",
+      "kind": "hunk",
+      "path": "app/cache.py",
+      "start_line": 20,
+      "end_line": 27,
+      "text": "@@ -20,7 +20,8 @@ class Cache:\n     def get(self, key):\n         value = self._store.get(key)\n-        if value is None or value.expired():\n+        if value.expired():\n+            del self._store[key]\n             return None\n         return value.data",
+      "new_lines": [
+        22,
+        23
+      ]
+    }
+  ],
+  "responses": [
+    "Here is my review:\n```json\n{\"findings\": [{\"path\": \"app/cache.py\", \"line\": 22, \"severity\": \"high\", \"category\": \"bug\", \"claim\": \"value can be None\"}]}\n```",
+    "{\"findings\": [{\"path\": \"app/cache.py\", \"line\": 21, \"severity\": \"high\", \"category\": \"bug\", \"claim\": \"The None check was removed: a missing key makes value None and value.expired() raises AttributeError.\", \"quote\": \"if value.expired():\", \"evidence\": [\"H1\"], \"suggestion\": \"Keep `value is None or` in the condition.\", \"confidence\": 0.9}]}",
+    "The PR changes Cache.get in app/cache.py to delete expired entries when they are read."
+  ],
+  "labels": [
+    {
+      "path": "app/cache.py",
+      "quote": "if value.expired():",
+      "label": "useful"
+    }
+  ]
+}

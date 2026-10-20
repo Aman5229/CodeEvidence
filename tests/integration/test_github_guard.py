@@ -5,7 +5,7 @@ import time
 import httpx
 import pytest
 
-from app.integrations.github.guard import GitHubGuard, GitHubUnavailable, rate_limit_wait_seconds
+from app.integrations.github.guard import GitHubGuard, ServiceUnavailable, rate_limit_wait_seconds
 
 
 def github_error(status: int, headers: dict | None = None) -> httpx.HTTPStatusError:
@@ -42,7 +42,7 @@ def test_opens_after_the_threshold_of_transient_failures(guard):
   fail(guard, 1)
 
   assert guard.state() == "open"
-  with pytest.raises(GitHubUnavailable) as raised:
+  with pytest.raises(ServiceUnavailable) as raised:
     guard.before_call()
   assert 0 < raised.value.retry_after <= 1
 
@@ -68,7 +68,7 @@ def test_after_the_open_period_one_caller_tests_github(guard):
 
   assert guard.state() == "half_open"
   guard.before_call()  # the first caller is the probe
-  with pytest.raises(GitHubUnavailable):
+  with pytest.raises(ServiceUnavailable):
     guard.before_call()  # everyone else waits for its result
 
 
@@ -108,7 +108,7 @@ def test_state_is_shared_by_every_worker(redis_client, guard):
   other_worker = GitHubGuard(redis_client)
   fail(guard, 3)
 
-  with pytest.raises(GitHubUnavailable):
+  with pytest.raises(ServiceUnavailable):
     other_worker.before_call()
 
 
@@ -120,7 +120,7 @@ def test_rate_limit_pauses_every_caller_until_the_reset_time(guard):
     github_error(403, {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(reset)})
   )
 
-  with pytest.raises(GitHubUnavailable) as raised:
+  with pytest.raises(ServiceUnavailable) as raised:
     guard.before_call()
   assert "rate limited" in str(raised.value)
   assert 25 <= raised.value.retry_after <= 31
