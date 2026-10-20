@@ -2,6 +2,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import distinct, func, select
+from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.orm import Session
 
 from app.api.errors import error_responses
@@ -35,13 +36,15 @@ MAX_INSIGHT_IDS = 100
 def overview(db: Session = Depends(get_db)):
   """Totals for the dashboard: PRs, risk levels, reviews, findings, feedback and cost.
 
-  Findings are counted on reviews that called the model; reviews reused from the cache
-  repeat earlier findings and would count them twice.
+  Findings are counted on reviews that called the model, when the model raised them: reviews
+  reused from the cache, and findings an incremental review carried over, would count them twice.
   """
   shown = func.count(ReviewFinding.id).filter(ReviewFinding.rank.is_not(None))
   dropped = func.count(ReviewFinding.id).filter(ReviewFinding.status == "dropped")
   findings_shown, findings_dropped = db.execute(
-    select(shown, dropped).join(Review, Review.id == ReviewFinding.review_id).where(Review.cached.is_(False))
+    select(shown, dropped)
+    .join(Review, Review.id == ReviewFinding.review_id)
+    .where(Review.cached.is_(False), ReviewFinding.carried_from_review_id.is_(None))
   ).one()
   levels = dict(db.execute(select(PullRequestRisk.level, func.count()).group_by(PullRequestRisk.level)).all())
   verdicts = dict(
@@ -122,7 +125,7 @@ def pull_request_insights(
     select(Review.id, Review.pull_request_id, Review.status)
     .where(Review.pull_request_id.in_(ids))
     .order_by(Review.pull_request_id, Review.created_at.desc(), Review.id.desc())
-    .distinct(Review.pull_request_id)  # Postgres DISTINCT ON: the newest review of each PR
+    .ext(distinct_on(Review.pull_request_id))  # Postgres DISTINCT ON: the newest review of each PR
   ).all()
   counts = {
     review_id: (shown, high)

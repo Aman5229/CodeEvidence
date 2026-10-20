@@ -9,11 +9,12 @@ from collections.abc import Callable
 from celery import Task
 from celery.exceptions import Retry
 from pydantic import BaseModel
+from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
 from app.core.cache import invalidate_pull_request
 from app.core.logs import delivery_id_var, job_id_var, request_id_var
-from app.db.models import JobRun
+from app.db.models import GitHubEvent, JobRun, Learning, PullRequest, Repository, Review, ReviewFinding
 from app.db.redis import redis_client
 from app.db.session import SessionLocal
 from app.integrations.github.client import get_github_client
@@ -34,11 +35,36 @@ from app.modules.job_runs import (
   requeue_job_run,
   start_job_run,
 )
-from app.modules.review.llm import LLMError, LLMGuard, get_llm
+from app.modules.review.chat import (
+  HELP_TEXT,
+  Mention,
+  answer,
+  answer_marker,
+  chat_bundle,
+  comment_from_event,
+  github_reply,
+  history,
+  is_own_comment,
+  parse_mention,
+  render_for_github,
+  save_exchange,
+)
+from app.modules.review.feedback import finding_for_comment
+from app.modules.review.learnings import (
+  MAX_LEARNING_CHARS,
+  MIN_LEARNING_CHARS,
+  create_learning,
+  distill,
+  is_blanket_rule,
+)
+from app.modules.review.llm import BudgetExceeded, CostMeter, LLMError, LLMGuard, get_llm
+from app.modules.review.publishing import dashboard_link, publishing_allowed
 from app.modules.review.publishing import publish_review as publish_review_to_github
 from app.modules.review.service import review_pull_request as review_pull_request_with_llm
 from app.modules.risk.service import compute_risk
 from app.schemas.jobs import (
+  AnswerMentionPayload,
+  DistillLearningPayload,
   IndexRepositoryPayload,
   JobMessage,
   ProcessEventPayload,
@@ -168,6 +194,30 @@ def _process_event(db: Session, job: JobRun) -> None:
       SyncPullRequestFilesPayload(pull_request_id=pull_request_id),
       event_id=payload.event_id,
     )
+  _queue_comment_follow_up(db, payload.event_id)
+
+
+def _queue_comment_follow_up(db: Session, event_id: int) -> None:
+  """A new PR comment may ask CodeEvidence something (a mention), or say why one of its
+  findings was wrong (a reply in its thread: a possible learning)."""
+  event = db.get(GitHubEvent, event_id)
+  comment = comment_from_event(db, event.event_type, event.payload)
+  if comment is None or not comment.trusted or is_own_comment(comment.body):
+    return
+  pull_request = db.get(PullRequest, comment.pull_request_id)
+  if not publishing_allowed(db.get(Repository, pull_request.repository_id).full_name):
+    return  # CodeEvidence talks on GitHub only where it may write
+  if parse_mention(comment.body) is not None:
+    mention = AnswerMentionPayload(
+      pull_request_id=comment.pull_request_id, comment_id=comment.comment_id, kind=comment.kind,
+      body=comment.body, author=comment.author, in_reply_to_id=comment.in_reply_to_id,
+    )
+    enqueue_job(db, answer_mention, mention, event_id=event_id)
+  elif comment.kind == "review" and comment.body.strip():
+    finding = finding_for_comment(db, comment.in_reply_to_id)
+    if finding is not None:
+      reason = DistillLearningPayload(finding_id=finding.id, reason=comment.body[:2000], source="github")
+      enqueue_job(db, distill_learning, reason, event_id=event_id)
 
 
 def _sync_pr_files(db: Session, job: JobRun) -> None:
@@ -211,6 +261,19 @@ def _index_repository(db: Session, job: JobRun) -> None:
   logger.info("Repository indexed", extra={"repository_id": payload.repository_id, **vars(result)})
 
 
+def _with_llm(call):
+  """Run `call` (which uses the LLM) through the LLM guard: refuse while paused, record the outcome."""
+  guard = get_llm_guard()
+  guard.before_call()
+  try:
+    result = call()
+  except LLMError as error:
+    guard.record_failure(error)
+    raise
+  guard.record_success()
+  return result
+
+
 def _review_pull_request(db: Session, job: JobRun) -> None:
   payload = ReviewPullRequestPayload.model_validate(job.payload)
   github_guard, llm_guard = get_github_guard(), get_llm_guard()
@@ -222,7 +285,7 @@ def _review_pull_request(db: Session, job: JobRun) -> None:
       lambda: asyncio.run(
         review_pull_request_with_llm(
           db, get_github_client(), get_embedder(), llm, payload.pull_request_id,
-          budget_usd=settings.review_budget_usd,
+          budget_usd=settings.review_budget_usd, mode=payload.mode,
         )
       ),
     )
@@ -241,6 +304,119 @@ def _review_pull_request(db: Session, job: JobRun) -> None:
 def _publish_review(db: Session, job: JobRun) -> None:
   payload = PublishReviewPayload.model_validate(job.payload)
   _guarded(get_github_guard(), lambda: asyncio.run(publish_review_to_github(db, get_github_client(), payload.review_id)))
+
+
+def _distill_learning(db: Session, job: JobRun) -> None:
+  payload = DistillLearningPayload.model_validate(job.payload)
+  finding = db.get(ReviewFinding, payload.finding_id)
+  if finding is None:
+    raise ValueError(f"Finding {payload.finding_id} does not exist")
+  if db.scalar(select(exists().where(Learning.source_finding_id == finding.id, Learning.source == payload.source))):
+    logger.info("This finding already gave a learning", extra={"finding_id": finding.id})
+    return
+  llm = get_llm()
+  distilled = _with_llm(
+    lambda: distill(
+      CostMeter(llm, settings.chat_budget_usd),
+      path=finding.path, claim=finding.claim, quote=finding.quote, reason=payload.reason,
+    )
+  )
+  if distilled.rule is None:
+    logger.info("No rule in this feedback", extra={"finding_id": finding.id})
+    return
+  repository_id = db.scalar(
+    select(PullRequest.repository_id).join(Review, Review.pull_request_id == PullRequest.id).where(Review.id == finding.review_id)
+  )
+  learning = create_learning(
+    db, get_embedder(), repository_id=repository_id, text=distilled.rule, path_glob=distilled.path_glob,
+    source=payload.source, enabled=payload.source == "dashboard",  # from GitHub: approved in the dashboard first
+    source_finding_id=finding.id,
+  )
+  db.commit()
+  logger.info("Learning saved", extra={"learning_id": learning.id, "enabled": learning.enabled})
+
+
+def _answer_mention(db: Session, job: JobRun) -> None:
+  payload = AnswerMentionPayload.model_validate(job.payload)
+  mention = parse_mention(payload.body)
+  pull_request = db.get(PullRequest, payload.pull_request_id)
+  if mention is None or pull_request is None:
+    return
+  repository = db.get(Repository, pull_request.repository_id)
+  if not publishing_allowed(repository.full_name):
+    logger.info("Not answering on %s: not in PUBLISH_REPOSITORIES", repository.full_name)
+    return
+  github, guard = get_github_client(), get_github_guard()
+  if _guarded(guard, lambda: asyncio.run(_answered_already(github, repository.full_name, pull_request.number, payload))):
+    return  # a retried job: the reply is already there
+  text = _carry_out(db, job, pull_request, mention, payload)
+  body = github_reply(text, dashboard_link(pull_request.id), payload.comment_id)
+  _guarded(guard, lambda: asyncio.run(_post_reply(github, repository.full_name, pull_request.number, payload, body)))
+  db.commit()
+
+
+async def _answered_already(github, repo_full_name: str, number: int, payload: AnswerMentionPayload) -> bool:
+  if payload.kind == "issue":
+    comments = await github.list_issue_comments(repo_full_name, number)
+  else:
+    comments = await github.list_review_comments(repo_full_name, number)
+  marker = answer_marker(payload.comment_id)
+  return any(marker in (comment.get("body") or "") for comment in comments)
+
+
+async def _post_reply(github, repo_full_name: str, number: int, payload: AnswerMentionPayload, body: str) -> None:
+  if payload.kind == "issue":
+    await github.create_issue_comment(repo_full_name, number, body)
+  else:  # replies go to the thread's first comment: GitHub has no replies to replies
+    await github.reply_to_review_comment(repo_full_name, number, payload.in_reply_to_id or payload.comment_id, body)
+
+
+def _carry_out(db: Session, job: JobRun, pull_request: PullRequest, mention: Mention, payload: AnswerMentionPayload) -> str:
+  """Do what the mention asks; returns the text of the reply."""
+  if mention.command == "help":
+    return HELP_TEXT
+  if mention.command in ("review", "full_review"):
+    mode = "full" if mention.command == "full_review" else "auto"
+    review = ReviewPullRequestPayload(pull_request_id=pull_request.id, mode=mode)
+    enqueue_job(db, review_pull_request, review, event_id=job.event_id)
+    started = "Starting a full review of this pull request." if mode == "full" else (
+      "Starting a review of the changes since the last review."
+    )
+    return f"{started} The walkthrough comment will be updated when it is done."
+  if mention.command == "remember":
+    return _remember(db, pull_request, mention.text, payload)
+  return _ask(db, pull_request, mention.text, payload)
+
+
+def _remember(db: Session, pull_request: PullRequest, text: str, payload: AnswerMentionPayload) -> str:
+  rule = " ".join(text.split())
+  if len(rule) < MIN_LEARNING_CHARS:
+    return "Write the rule after `remember`, for example: `@codeevidence remember request bodies in src/api are validated by middleware`."
+  if len(rule) > MAX_LEARNING_CHARS:
+    return f"Not saved: keep the rule under {MAX_LEARNING_CHARS} characters."
+  if is_blanket_rule(rule):
+    return "Not saved: a rule must not turn off a whole category of findings."
+  finding = finding_for_comment(db, payload.in_reply_to_id) if payload.kind == "review" else None
+  create_learning(
+    db, get_embedder(), repository_id=pull_request.repository_id, text=rule, path_glob=None, source="github",
+    enabled=False, source_finding_id=finding.id if finding else None,
+  )
+  return "Saved as a proposed learning. It applies to future reviews of this repository once someone approves it in the dashboard."
+
+
+def _ask(db: Session, pull_request: PullRequest, question: str, payload: AnswerMentionPayload) -> str:
+  bundle = chat_bundle(db, get_embedder(), pull_request, question, settings.chat_token_budget)
+  earlier = history(db, pull_request.id)
+  llm = get_llm()
+  try:
+    result = _with_llm(lambda: answer(CostMeter(llm, settings.chat_budget_usd), bundle, earlier, question))
+  except BudgetExceeded:
+    return "Sorry, answering this would go over the budget for one answer. Try a narrower question."
+  save_exchange(
+    db, pull_request.id, question, result, bundle, source="github", model=llm.model,
+    github_user=payload.author, github_comment_id=payload.comment_id,
+  )
+  return render_for_github(result.text, bundle)
 
 
 @celery_app.task
@@ -282,11 +458,26 @@ def publish_review(self, message: dict) -> None:
   run_tracked(self, message, _publish_review)
 
 
+@celery_app.task(bind=True, max_retries=None)
+def distill_learning(self, message: dict) -> None:
+  """Turn a reviewer's reason for rejecting a finding into a learning for future reviews."""
+  run_tracked(self, message, _distill_learning)
+
+
+@celery_app.task(bind=True, max_retries=None)
+def answer_mention(self, message: dict) -> None:
+  """Answer a PR comment that mentions @codeevidence: a command or a question."""
+  run_tracked(self, message, _answer_mention)
+
+
 # ---------- the producer side ----------
 
 JOB_TASKS = {
   task.name.rsplit(".", 1)[-1]: task
-  for task in (process_event, sync_pr_files, index_repository, review_pull_request, publish_review)
+  for task in (
+    process_event, sync_pr_files, index_repository, review_pull_request, publish_review, distill_learning,
+    answer_mention,
+  )
 }
 
 

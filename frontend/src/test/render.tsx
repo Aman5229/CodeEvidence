@@ -22,13 +22,32 @@ export function renderWithClient(element: React.ReactNode) {
   return render(<QueryClientProvider client={queryClient}>{element}</QueryClientProvider>)
 }
 
-/** Replace fetch: `routes` maps "METHOD /path" to [status, body]. Returns the mock to inspect calls. */
-export function mockApi(routes: Record<string, [number, unknown]>) {
-  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-    const request = input as Request
+type Answer = [number, unknown] | ((request: Request) => Response | Promise<Response>)
+
+/** Replace fetch: `routes` maps "METHOD /path" to [status, body], or to a function building the
+ * response (e.g. a stream). Returns the mock to inspect calls. */
+export function mockApi(routes: Record<string, Answer>) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init)
     const url = new URL(request.url)
     const answer = routes[`${request.method} ${url.pathname}`]
     if (!answer) return new Response(JSON.stringify({ error: { code: 'not_found', message: 'Not mocked' } }), { status: 404 })
+    if (typeof answer === 'function') return answer(request)
+    if (answer[0] === 204) return new Response(null, { status: 204 })
     return new Response(JSON.stringify(answer[1]), { status: answer[0], headers: { 'Content-Type': 'application/json' } })
   })
+}
+
+/** A server-sent events response, delivered in two pieces cut mid-event (as a network may). */
+export function eventStream(events: [string, unknown][]): Response {
+  const bytes = new TextEncoder().encode(events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join(''))
+  const middle = Math.floor(bytes.length / 2)
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(bytes.slice(0, middle))
+      controller.enqueue(bytes.slice(middle))
+      controller.close()
+    },
+  })
+  return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
 }

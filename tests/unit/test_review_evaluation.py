@@ -58,6 +58,7 @@ def test_percentile():
 class StoredFinding:
   severity, category, claim, suggestion, confidence = "high", "bug", "It breaks.", None, 0.8
   evidence, finding_key = ["H1"], "a" * 32
+  path, line, quote, replacement = "app/x.py", 3, "x = 1", None
 
 
 def test_comment_carries_a_hidden_key_and_it_is_found_again():

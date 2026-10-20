@@ -39,6 +39,17 @@ class Settings(BaseSettings):
 
   # Publishing reviews to GitHub: only to these repositories (owner/name, comma-separated)
   publish_repositories: str = ""
+
+  # Chat about a PR ("Ask CodeEvidence"), in the dashboard and by @codeevidence on GitHub
+  chat_budget_usd: float = 0.10  # per answer (also for turning feedback into a learning)
+  chat_token_budget: int = 8_000  # evidence sent along with a question
+
+  # Links back to the dashboard (commit statuses, replies on GitHub)
+  dashboard_url: str = "http://localhost:5173"
+
+  # Static analysis tools (ruff, semgrep, gitleaks) run on the changed files when installed
+  tools_enabled: bool = True
+  tool_timeout_seconds: int = 60
   model_config = SettingsConfigDict(env_file=".env")
 
 

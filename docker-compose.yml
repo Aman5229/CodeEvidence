@@ -17,6 +17,11 @@ x-app-env: &app-env
   REVIEW_ON_SYNC: ${REVIEW_ON_SYNC:-false}
   PUBLISH_REPOSITORIES: ${PUBLISH_REPOSITORIES:-}
   EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-local}
+  CHAT_BUDGET_USD: ${CHAT_BUDGET_USD:-0.10}
+  CHAT_TOKEN_BUDGET: ${CHAT_TOKEN_BUDGET:-8000}
+  TOOLS_ENABLED: ${TOOLS_ENABLED:-true}
+  # Links in GitHub comments and commit statuses point here
+  DASHBOARD_URL: ${DASHBOARD_URL:-http://localhost:5173}
 
 services:
   postgres:
@@ -62,6 +67,8 @@ services:
         condition: service_healthy
     ports:
       - "8000:8000"
+    volumes:
+      - model_cache:/root/.cache/huggingface  # learnings and chat questions are embedded here too
     # --no-access-log: the app writes its own JSON access line per request, with the request id
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-access-log"
 

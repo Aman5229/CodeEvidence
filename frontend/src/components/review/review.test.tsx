@@ -73,7 +73,7 @@ describe('EvidenceTab', () => {
   it('groups evidence by kind and shows what was cited', () => {
     renderWithClient(<EvidenceTab review={REVIEW} />)
 
-    expect(screen.getByRole('region', { name: 'Rule signals' })).toHaveTextContent('S1')
+    expect(screen.getByRole('region', { name: 'Signals' })).toHaveTextContent('S1')
     expect(screen.getByRole('region', { name: 'Related code' })).toHaveTextContent('not cited')
     expect(screen.getByRole('region', { name: 'Diff hunks' })).toHaveTextContent('cited by 2')
   })

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -28,10 +29,30 @@ class IndexRepositoryPayload(BaseModel):
 
 class ReviewPullRequestPayload(BaseModel):
   pull_request_id: int
+  mode: Literal["auto", "full"] = "auto"  # auto: only the changes since the last review, when possible
 
 
 class PublishReviewPayload(BaseModel):
   review_id: int
+
+
+class DistillLearningPayload(BaseModel):
+  """Turn a reviewer's reason for rejecting a finding into a learning."""
+
+  finding_id: int
+  reason: str
+  source: Literal["dashboard", "github"]
+
+
+class AnswerMentionPayload(BaseModel):
+  """A PR comment that mentions @codeevidence: a command or a question."""
+
+  pull_request_id: int
+  comment_id: int
+  kind: Literal["issue", "review"]  # the PR conversation, or an inline review thread
+  body: str
+  author: str | None = None
+  in_reply_to_id: int | None = None  # review threads: the comment that started the thread
 
 
 class JobRunOut(BaseModel):

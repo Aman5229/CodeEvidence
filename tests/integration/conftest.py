@@ -8,12 +8,14 @@ from redis import Redis
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
+from app.api.deps import get_model, get_text_embedder
 from app.db import models  # noqa: F401  (registers all tables on Base.metadata)
 from app.db.base import Base
 from app.db.redis import get_redis
 from app.db.session import get_db
 from app.integrations.github.client import get_github_client
 from app.main import app
+from app.modules.code.embeddings import FakeEmbedder
 
 # A SEPARATE database, so tests never touch your real data.
 TEST_DATABASE_URL = os.getenv(
@@ -63,6 +65,13 @@ class FakeGitHubClient:
     self.reviews_posted: list[dict] = []
     self.review_comments: list[dict] = []  # returned by list_review_comments
     self.reactions: dict[int, list[dict]] = {}  # comment id -> reactions
+    # Settings and guideline files on the default branch (get_file): path -> content
+    self.repo_files: dict[str, bytes] = {}
+    self.comparison: dict | None = None  # compare_commits answer; None answers 404
+    self.compared: list[tuple[str, str]] = []  # (base, head) of each comparison asked for
+    self.issue_comments: list[dict] = []  # the PR conversation
+    self.statuses: list[dict] = []  # commit statuses posted
+    self.status_code_for_statuses: int | None = None  # e.g. 403: the token may not set statuses
 
   async def get_pull_request_files(self, repo_full_name: str, pr_number: int) -> list[dict]:
     self.calls.append((repo_full_name, pr_number))
@@ -93,6 +102,44 @@ class FakeGitHubClient:
   async def list_comment_reactions(self, repo_full_name: str, comment_id: int) -> list[dict]:
     return self.reactions.get(comment_id, [])
 
+  async def get_file(self, repo_full_name: str, path: str, ref: str) -> dict | None:
+    content = self.repo_files.get(path)
+    return None if content is None else {"sha": f"sha-{path}", "content": content}
+
+  async def compare_commits(self, repo_full_name: str, base: str, head: str) -> dict:
+    self.compared.append((base, head))
+    if self.comparison is None:
+      request = httpx.Request("GET", "https://api.github.com/fake/compare")
+      raise httpx.HTTPStatusError("404 error", request=request, response=httpx.Response(404, request=request))
+    return self.comparison
+
+  async def list_issue_comments(self, repo_full_name: str, issue_number: int) -> list[dict]:
+    return [dict(comment) for comment in self.issue_comments]
+
+  async def create_issue_comment(self, repo_full_name: str, issue_number: int, body: str) -> dict:
+    comment = {"id": 7000 + len(self.issue_comments), "body": body}
+    self.issue_comments.append(comment)
+    return dict(comment)
+
+  async def update_issue_comment(self, repo_full_name: str, comment_id: int, body: str) -> dict:
+    comment = next(comment for comment in self.issue_comments if comment["id"] == comment_id)
+    comment["body"] = body
+    return dict(comment)
+
+  async def reply_to_review_comment(self, repo_full_name: str, pr_number: int, comment_id: int, body: str) -> dict:
+    reply = {"id": 9000 + len(self.review_comments), "in_reply_to_id": comment_id, "body": body}
+    self.review_comments.append(reply)
+    return dict(reply)
+
+  async def create_commit_status(self, repo_full_name, sha, *, state, description, context, target_url) -> dict:
+    if self.status_code_for_statuses is not None:
+      request = httpx.Request("POST", "https://api.github.com/fake/statuses")
+      response = httpx.Response(self.status_code_for_statuses, request=request)
+      raise httpx.HTTPStatusError(f"{self.status_code_for_statuses} error", request=request, response=response)
+    status = {"sha": sha, "state": state, "description": description[:140], "context": context, "target_url": target_url}
+    self.statuses.append(status)
+    return status
+
 
 @pytest.fixture(autouse=True)
 def no_risk_model(monkeypatch):
@@ -121,9 +168,9 @@ def db_session(engine):
   with engine.begin() as connection:
     connection.execute(
       text(
-        "TRUNCATE api_keys, job_runs, finding_feedback, review_findings, reviews, code_chunks, file_blobs, "
-        "pull_request_risks, github_events, pull_request_files, pull_requests, repositories "
-        "RESTART IDENTITY CASCADE"
+        "TRUNCATE api_keys, job_runs, finding_feedback, learnings, chat_messages, review_findings, reviews, "
+        "code_chunks, file_blobs, pull_request_risks, github_events, pull_request_files, pull_requests, "
+        "repositories RESTART IDENTITY CASCADE"
       )
     )
   session = sessionmaker(bind=engine)()
@@ -233,8 +280,9 @@ def api_key(db_session) -> str:
 
 
 @pytest.fixture
-def client(db_session, redis_client, fake_github, fake_broker, api_key, monkeypatch):
-  """An HTTP client for the app, wired to the test DB, test Redis, fake GitHub and fake broker.
+def client(db_session, redis_client, fake_github, fake_broker, fake_llm, api_key, monkeypatch):
+  """An HTTP client for the app, wired to the test DB, test Redis, fake GitHub, fake broker,
+  fake LLM and fake embeddings.
 
   It sends a valid API key on every request, so the read API's real auth path is exercised.
   The rate limit is raised so that only the rate-limit tests ever reach it.
@@ -249,5 +297,7 @@ def client(db_session, redis_client, fake_github, fake_broker, api_key, monkeypa
   # Ids restart at 1 in every test, so a shared cache would leak old responses.
   app.dependency_overrides[get_redis] = lambda: redis_client
   app.dependency_overrides[get_github_client] = lambda: fake_github
+  app.dependency_overrides[get_model] = lambda: fake_llm
+  app.dependency_overrides[get_text_embedder] = FakeEmbedder
   yield TestClient(app, headers={"X-API-Key": api_key})
   app.dependency_overrides.clear()

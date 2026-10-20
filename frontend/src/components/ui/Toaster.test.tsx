@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 import { useToast } from './toast'
@@ -25,6 +25,7 @@ describe('toasts', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Feedback saved')
 
     await act(() => userEvent.click(screen.getByRole('button', { name: 'Dismiss' })))
-    expect(await screen.findByRole('status')).not.toHaveTextContent('Feedback saved')
+    // The toast leaves through an exit animation: wait for it to be removed
+    await waitFor(() => expect(screen.getByRole('status')).not.toHaveTextContent('Feedback saved'))
   })
 })

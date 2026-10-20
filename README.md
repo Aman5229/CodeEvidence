@@ -42,7 +42,9 @@ event is queued again.
 | Risk score | Rule-based score 0-100 with reasons, computed after each file sync | [doc/risk.md](doc/risk.md) |
 | ML risk model | Predicts "closed without merge"; trained on a time split, calibrated, served next to the rules with a fallback | [doc/ml.md](doc/ml.md) |
 | Code retrieval | tree-sitter chunks, local embeddings in pgvector, hybrid vector + keyword search, deterministic signals, a token-budgeted evidence bundle | [doc/retrieval.md](doc/retrieval.md) |
-| AI review | Claude proposes findings as JSON; verification drops anything the evidence does not support; ranked, capped, cached, cost-budgeted, injection-hardened | [doc/review.md](doc/review.md) |
+| AI review | Claude (or a free local model) proposes findings as JSON; verification drops anything the evidence does not support; ranked, capped, cached, cost-budgeted, injection-hardened | [doc/review.md](doc/review.md) |
+| Review features | One-click fixes, repository settings and guidelines, incremental reviews, learnings from feedback, ruff/semgrep/gitleaks signals, sequence diagrams and review effort, a walkthrough comment and merge check, chat with citations (dashboard and `@codeevidence`) | [doc/review.md](doc/review.md) |
+| Triage and insight | A review queue (priority, effort, suggested reviewers), analytics on review usefulness, and the blast radius of a change | [doc/api.md](doc/api.md) |
 | GitHub feedback and evaluation | Idempotent inline comments on a sandbox repo, feedback capture, labelled-set metrics, a replay quality gate in CI | [doc/evaluation.md](doc/evaluation.md) |
 | Dashboard | React + TypeScript over the API | [frontend/README.md](frontend/README.md) |
 
@@ -56,8 +58,14 @@ event is queued again.
 | GET | `/repositories/{id}/pull-requests` | PRs, newest first; filters: `status`, `merged`, `author`, `is_bot`, `created_after`, `created_before` |
 | GET | `/pull-requests/{id}` | One PR with changed files and totals (`?include_patch=true` adds the diffs) |
 | GET | `/pull-requests/{id}/risk` | Risk score 0-100 with its reasons and features, plus the ML model's prediction ([doc/risk.md](doc/risk.md)) |
-| GET | `/pull-requests/{id}/review` | The latest AI review: summary and verified, ranked findings with their evidence |
-| POST | `/pull-requests/{id}/review` | Queue an AI review (an identical earlier one is reused at no cost) |
+| GET | `/pull-requests/{id}/review` | The latest AI review: summary, diagram, effort and verified, ranked findings with their evidence and one-click fixes |
+| POST | `/pull-requests/{id}/review` | Queue an AI review (`?mode=full` to review everything; an identical earlier one is reused at no cost) |
+| GET, POST | `/pull-requests/{id}/chat` | The PR's conversation; ask a question (answer streamed as server-sent events) |
+| GET | `/pull-requests/{id}/impact` | Changed functions and classes, and the code that uses them |
+| GET, POST | `/repositories/{id}/learnings` | Rules for future reviews (`PATCH`, `DELETE /learnings/{id}`) |
+| GET | `/repositories/{id}/config` | The `.codeevidence.yaml` settings and guideline files in use |
+| GET | `/review-queue` | Open PRs in the order to review them |
+| GET | `/analytics` | How useful the reviews are, over time |
 | POST | `/repositories/{id}/index` | Queue indexing of the repository's code for retrieval |
 | POST | `/findings/{id}/feedback` | Rate a finding: `{"verdict": "useful" \| "not_useful"}` |
 | POST | `/webhooks/github` | Signed GitHub webhook receiver (stores, queues, answers 202) |
@@ -315,3 +323,6 @@ every run. Real repositories are never touched.
 - **Only `pull_request` events and replies or resolutions on our review comments are processed.** Other events are stored as `received`.
 - **Repository metadata is not refreshed** after the first insert (e.g. a renamed repo keeps its old name).
 - `patch_truncated` and `is_stale` on files are placeholders, not yet computed.
+- **One-click fixes are checked for syntax, not imports or meaning:** a fix can use a module the file does not import.
+- **Impact finds uses inside functions and classes** of the indexed default branch, by name: module-level uses are missed, and same-named functions can match.
+- **Small local models** (qwen2.5-coder 7B) skip citations at times and draw a sequence diagram for about half the PRs; a larger model is expected to do better.

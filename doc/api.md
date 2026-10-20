@@ -113,24 +113,62 @@ that the PR is closed without being merged, and whether it is above the model's 
 It is `null` when no model is loaded; the rule score is always present ([ml.md](ml.md)).
 
 ### 11. GET /pull-requests/{pull_request_id}/review
-The PR's latest AI review: `status` (`completed` or `budget_exceeded`), `summary`, and
-`findings` that passed verification, best first. Each finding has `rank`, `path`, `line`,
-`severity`, `category`, `claim`, `quote`, `suggestion`, `confidence`, the `evidence` items it
-cites (id, kind, path, lines, text) and its `feedback` counts. Also: `dropped_findings`,
-`prompt_version`, `model`, `cached`, `llm_calls`, tokens, `cost_usd`, `latency_ms`,
-`published_at`. 404 if the PR does not exist or has no review yet. How it works:
-[review.md](review.md).
+The PR's latest AI review: `status` (`completed` or `budget_exceeded`), `mode` (`full` or
+`incremental`, with `base_review_id` and `compared_from_sha`), `summary`, `diagram` (Mermaid
+or null), `effort` (`{level 1-5, minutes}`), and `findings` that passed verification, best
+first. Each finding has `rank`, `path`, `line`, `severity`, `category`, `claim`, `quote`,
+`suggestion`, `replacement` and `original_line` (a checked one-click fix, or null),
+`agent_prompt`, `confidence`, the `evidence` items it cites (id, kind, path, lines, text,
+`source_id` for learnings), its `feedback` counts (for this problem across the PR's reviews)
+and `carried_from_review_id`. Also: `tools` (static analysis runs), `config` (the settings
+applied), `check_state`, `dropped_findings`, `prompt_version`, `model`, `cached`, `llm_calls`,
+tokens, `cost_usd`, `latency_ms`, `published_at`, `pull_request_url`. 404 if the PR does not
+exist or has no review yet. How it works: [review.md](review.md).
 
-### 12. POST /pull-requests/{pull_request_id}/review
-Queues a review job and returns 202 with `{job_id, status}`. If the evidence, prompt and
-model are identical to an earlier completed review, its result is reused (no LLM call).
-404 for an unknown PR, 503 if the job cannot be queued.
+### 12. POST /pull-requests/{pull_request_id}/review?mode=auto|full
+Queues a review job and returns 202 with `{job_id, status}`. `auto` (default): after new
+commits on top of the last review, only the files changed since are reviewed and the other
+findings are carried over. `full`: everything. If the input is identical to an earlier
+completed review, its result is reused (no LLM call). 404 for an unknown PR, 503 if the job
+cannot be queued.
 
 ### 13. POST /repositories/{repository_id}/index
 Queues indexing of the repository's default branch for retrieval (202, `{job_id, status}`).
 Only files changed since the last run are fetched and embedded. 404, 503 as above.
 
 ### 14. POST /findings/{finding_id}/feedback
-Body `{"verdict": "useful" | "not_useful"}`. Records a dashboard vote and returns 201 with
-the stored feedback. 404 for an unknown finding, 422 for another verdict.
+Body `{"verdict": "useful" | "not_useful", "reason": "..." (optional)}`. Records a dashboard
+vote and returns 201 with the stored feedback. A reason given with `not_useful` is turned
+into a learning by a job (`learning_job_id`). 404 for an unknown finding, 422 for another
+verdict.
+
+### 15. GET and POST /pull-requests/{pull_request_id}/chat
+`GET`: the conversation about the PR, oldest first (dashboard questions and `@codeevidence`
+mentions), each answer with its `citations` (id, kind, path, lines). `POST {"question"}`:
+the answer as **server-sent events**: `token` (`{text}`), then `done` (`{question, answer,
+unknown_citations}`) or `error` (`{message}`, nothing stored). Errors before the stream starts
+(404, 422, 503) are JSON as usual.
+
+### 16. Learnings: GET/POST /repositories/{repository_id}/learnings, PATCH/DELETE /learnings/{learning_id}
+Rules for the repository's future reviews. `POST {text (10-300), path_glob}` adds an enabled
+one; `PATCH {text?, path_glob?, enabled?}` edits, approves or disables one; `DELETE` returns
+204. Rules that switch off a whole category of findings are refused with 422.
+
+### 17. GET /repositories/{repository_id}/config
+The settings in `.codeevidence.yaml` on the default branch (or the defaults), with `source`,
+`error` and the `guideline_files` found. Read from GitHub on each call; 503 if GitHub fails.
+
+### 18. GET /review-queue?repository_id=&limit=
+Open PRs by priority (risk, the model's prediction, waiting time, quick wins), with band
+(P1-P3), reasons, effort and suggested reviewers. `total`, `p1`-`p3`, `total_minutes` and
+`not_reviewed` cover every open PR; `items` holds the first `limit` (default 50, max 200).
+
+### 19. GET /analytics?days=&repository_id=
+Review usefulness over a window (1-730 days): acceptance by category and per model, findings
+and votes per week, risk level against merges, where findings land, why findings were
+dropped, static analysis, learnings and chat use, and repeats after a 👎.
+
+### 20. GET /pull-requests/{pull_request_id}/impact
+Blast radius: the functions and classes the PR adds, changes or removes, and the indexed code
+that uses them. `indexed: false` without a code index (dependents are then empty).
 

@@ -1,4 +1,4 @@
-import { FolderGit2, GitPullRequest, LayoutDashboard, ListChecks, Settings } from 'lucide-react'
+import { BarChart3, FolderGit2, GitPullRequest, LayoutDashboard, ListChecks, ListOrdered, Settings } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { motion } from 'motion/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -11,6 +11,8 @@ type Item = { group: string; label: string; detail?: string; to: string; icon: L
 const PAGES: Item[] = [
   { group: 'Pages', label: 'Overview', to: '/', icon: LayoutDashboard },
   { group: 'Pages', label: 'Repositories', to: '/repositories', icon: FolderGit2 },
+  { group: 'Pages', label: 'Review queue', detail: 'what to review first', to: '/queue', icon: ListOrdered },
+  { group: 'Pages', label: 'Analytics', detail: 'how useful reviews are', to: '/analytics', icon: BarChart3 },
   { group: 'Pages', label: 'Jobs', to: '/jobs', icon: ListChecks },
   { group: 'Pages', label: 'Settings', to: '/settings', icon: Settings },
 ]

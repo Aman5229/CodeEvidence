@@ -2,7 +2,10 @@
 
 React + TypeScript (Vite) over the CodeEvidence API: repositories and their stats, PR lists
 with filters, PR detail with the diff, the risk score with its reasons and the model's
-prediction, and the AI review's findings with their evidence and feedback buttons.
+prediction, and the AI review: walkthrough with a sequence diagram and review effort,
+findings with one-click fixes and agent prompts, the blast radius of a change, and a chat
+about the PR ("Ask CodeEvidence"). Also: a review queue, analytics, and per-repository
+learnings and review settings.
 
 ## Run it
 
@@ -44,7 +47,9 @@ npm run gen:api                      # regenerates src/api/schema.d.ts
 | Server data | TanStack Query: caching, loading and error states, `useInfiniteQuery` for cursor paging |
 | Routing | React Router; PR filters live in the URL, so a filtered list can be shared |
 | API calls | `openapi-fetch` with the generated types; the API key is added to every request |
-| Feedback | Optimistic: the count changes at once and is rolled back if saving fails |
+| Feedback | Optimistic: the count changes at once and is rolled back if saving fails; a 👎 can carry a reason that becomes a learning |
+| Chat | `fetch` reads the server-sent events of a POST (EventSource only sends GET); answers render as safe Markdown (React elements, never HTML from the text) |
+| Diagrams | Mermaid in strict mode, loaded only when a diagram is shown |
 | Large diffs | Cut at 1,500 lines |
 | Styling | Plain CSS with light and dark themes; visible focus outlines |
 
@@ -56,5 +61,4 @@ npm run lint           # oxlint
 npm run build          # type-checks, then builds
 ```
 
-Not built yet: a Playwright end-to-end smoke test, charts beyond simple bars, syntax
-highlighting in diffs, and screenshots in the main README.
+Not built yet: a Playwright end-to-end smoke test and screenshots in the main README.

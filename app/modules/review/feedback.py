@@ -47,17 +47,20 @@ def record_feedback(
   return feedback
 
 
-def _finding_for_comment(db: Session, comment_id: int | None) -> ReviewFinding | None:
+def finding_for_comment(db: Session, comment_id: int | None) -> ReviewFinding | None:
   if comment_id is None:
     return None
-  return db.scalars(select(ReviewFinding).where(ReviewFinding.github_comment_id == comment_id)).first()
+  # Later reviews that find the same problem point at the same comment: take the newest finding
+  return db.scalars(
+    select(ReviewFinding).where(ReviewFinding.github_comment_id == comment_id).order_by(ReviewFinding.id.desc())
+  ).first()
 
 
 def feedback_from_webhook(db: Session, event_type: str, payload: dict) -> int:
   """Record replies to our comments and resolved threads. Returns how many were recorded."""
   if event_type == "pull_request_review_comment" and payload.get("action") == "created":
     comment = payload["comment"]
-    finding = _finding_for_comment(db, comment.get("in_reply_to_id"))
+    finding = finding_for_comment(db, comment.get("in_reply_to_id"))
     if finding is not None and record_feedback(
       db, finding, source="github_reply", verdict=None, body=comment.get("body"),
       github_user=(comment.get("user") or {}).get("login"), external_id=f"comment:{comment['id']}",
@@ -65,7 +68,7 @@ def feedback_from_webhook(db: Session, event_type: str, payload: dict) -> int:
       return 1
   if event_type == "pull_request_review_thread" and payload.get("action") == "resolved":
     comments = payload.get("thread", {}).get("comments") or [{}]
-    finding = _finding_for_comment(db, comments[0].get("id"))
+    finding = finding_for_comment(db, comments[0].get("id"))
     if finding is not None and record_feedback(
       db, finding, source="github_resolved", verdict=None,
       github_user=(payload.get("sender") or {}).get("login"),

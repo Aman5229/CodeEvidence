@@ -3,13 +3,17 @@
 An LLM reads the evidence bundle ([retrieval.md](retrieval.md)) and proposes findings. Only
 findings that the evidence supports survive, and they are ranked and capped.
 
-**Status:** built and tested with a fake LLM (unit and replay tests; integration tests need
-Docker). No review has been run against Claude yet: that needs `ANTHROPIC_API_KEY`.
+**Status:** built and tested with a fake LLM (unit, integration and replay tests), and run
+end to end against real flask, click and chatbot PRs with a free local model
+(qwen2.5-coder:7b on Ollama). Not yet run against Claude: that needs `ANTHROPIC_API_KEY`.
 
 ```
-evidence bundle ─> prompt v1 ─> Claude ─> JSON findings ─> validate (repair once)
-  ─> verify against the evidence ─> dedupe, rank, cap ─> store ─> GET /pull-requests/{id}/review
-                                                               └> publish to GitHub (allowed repos)
+settings (.codeevidence.yaml) + guidelines + learnings ─┐
+evidence bundle (+ ruff, semgrep, gitleaks signals) ────┴> prompt v2 ─> model ─> JSON findings
+  ─> validate (repair once) ─> verify against the evidence, check one-click fixes
+  ─> rank, cap (profile) ─> summary ─> diagram ─> store ─> GET /pull-requests/{id}/review
+                                                       └> publish: inline comments, walkthrough,
+                                                          commit status (allowed repos only)
 ```
 
 ## 1. Provider interface (`app/modules/review/llm.py`)
@@ -28,15 +32,17 @@ setting works for hosted free tiers (Groq, OpenRouter) with `LLM_BASE_URL` and `
 
 ## 2. Findings schema (`findings.py`)
 
-`path, line, severity, category, claim, quote, evidence[], suggestion, confidence`. The
-model answers in JSON; the answer is validated with Pydantic. If it is invalid, the
+`path, line, severity, category, claim, quote, evidence[], suggestion, replacement,
+confidence`. The model answers in JSON; the answer is validated with Pydantic. Line breaks
+typed inside a JSON string are accepted (a multi-line `replacement` arrives that way from
+small models; refusing it lost every finding of the answer). If it is invalid, the
 validation errors are sent back once ("repair"); if the second answer is invalid too, the
 review keeps going with no findings and records the error. Never invented findings.
 
 `quote` is the important field: the model must copy the exact code its claim is about. That
 makes the claim checkable without another model call.
 
-## 3. Prompts (`prompts/review_v1.md`, `prompts/summary_v1.md`)
+## 3. Prompts (`prompts/review_v2.md`, `summary_v1.md`, `diagram_v1.md`, `chat_v1.md`, `learning_v1.md`)
 
 Prompts are versioned files; the version is stored with every review, and it is part of the
 cache key. A prompt change is a new file (`review_v2.md`), so old results stay explainable
@@ -64,9 +70,18 @@ often the model makes things up.
 ## 5. Ranking (`ranking.py`)
 
 Priority = severity weight (3, 2, 1) x confidence, x 1.2 when a deterministic signal backs
-the finding. Findings on the same file and category within 3 lines are one problem. The PR's
-risk level sets the cap: 5 comments for high risk, 3 otherwise. Ties break on path, line and
-claim, so the order is stable.
+the finding. Findings on the same file and category within 3 lines are one problem. Ties
+break on path, line and claim, so the order is stable.
+
+The repository's **profile** (`.codeevidence.yaml`) sets the tone:
+
+| Profile | Low severity | Comments (high / medium / low risk) |
+|---|---|---|
+| `chill` (default) | only when a signal backs it | 5 / 3 / 3 |
+| `assertive` | always | 8 / 6 / 5 |
+
+The evaluation replays use `assertive`, so the quality gate sees every mistake verification
+lets through.
 
 ## 6. Prompt injection (`prompts.py`)
 
@@ -107,14 +122,92 @@ end). **Faithfulness check:** a summary naming a file the PR does not change is 
 
 ## 9. Caching
 
-The cache key is a SHA-256 of the exact model input: prompt versions, model, system prompt
-and evidence. The same input reuses the stored findings and summary with zero LLM calls and
-zero cost (`cached: true`). A new commit, a new prompt version or a different model gives a
-new key. Only completed reviews are reused.
+The cache key is a SHA-256 of everything that decides the result: prompt versions, model,
+system prompt and evidence, plus the profile, the risk level, and for incremental reviews the
+base review, the carried findings and the whole PR (for the summary). The same input reuses
+the stored result with zero LLM calls and zero cost (`cached: true`). Only completed reviews
+whose answer could be read are reused: an unreadable answer is asked for again.
 
 ## 10. API and jobs
 
 - `POST /pull-requests/{id}/review` queues a review (202); `GET` returns the latest one.
 - `REVIEW_ON_SYNC=true` reviews every PR after its files are synced. Off by default: it
   spends money.
+- `?mode=auto` (default) reviews only what changed since the last review when possible
+  (section 13); `?mode=full` always reviews everything.
 - Not built: model routing (a cheap model to triage, a strong one to verify), a stretch task.
+
+## 11. One-click fixes (`verification.py`, `fixes.py`)
+
+When a small edit of the flagged line fixes the problem, the model also writes
+`replacement`: the complete new text of that line. Before it is shown it must pass:
+
+| Check | Refused as |
+|---|---|
+| no Markdown fence inside | `markdown_fence` |
+| changes the line (ignoring spaces) | `no_change` |
+| at most 20 lines | `too_long` |
+| Python: the enclosing function still parses with it | `syntax_error` |
+
+"null", "none" or "n/a" written as text means no fix (seen from qwen: `null` parses as
+Python and would have replaced a real line). Lost indentation is put back. A refused fix
+keeps the finding, without the fix. On GitHub the fix is a `suggestion` block ("Commit
+suggestion"); every comment also carries a **prompt for AI agents** (Claude Code, Cursor...).
+Not checked: imports (a fix may use a module the file does not import) and semantics.
+
+## 12. Repository settings and guidelines (`repo_config.py`)
+
+`.codeevidence.yaml` and the guideline files are read from the **default branch**, so a PR
+cannot change the rules it is reviewed by. Settings: `profile`, `exclude` (globs), path
+`instructions` (evidence `P`), `guidelines`, `tools`, `merge_check.block_on`. Unknown keys
+and wrong values are reported, never silently ignored; a broken file means the defaults plus
+a visible error. Guideline files (evidence `G`): CLAUDE.md, AGENTS.md, .cursorrules,
+.github/copilot-instructions.md, CONTRIBUTING.md and .github/CONTRIBUTING.md, read in
+parallel, 1,500 characters each and 4,500 in all.
+
+## 13. Incremental reviews (`service.py`)
+
+After new commits on top of the last completed review, GitHub's compare API lists the files
+changed since; only those are reviewed, and the earlier review's findings on the other files
+are **carried over** (their code did not change). Their evidence is copied as `C1, C2...`
+with its kind kept. A full review instead when: `mode=full`, a rebase or force-push (status
+not `ahead`, or the old commit is gone), 300+ changed files, or a new prompt or model. When
+only unreviewed files changed (docs, excluded files), no model call is made at all. Verified
+against GitHub's real compare API on flask #6098.
+
+## 14. Learnings (`learnings.py`)
+
+Rules for one repository's future reviews: written in the dashboard, distilled by the model
+from a 👎 with a reason or a reply to one of our comments, or `@codeevidence remember ...`.
+The most relevant enabled ones (path glob, then meaning) go into each review as evidence `L`,
+which the prompt says to follow. Learnings from GitHub start **disabled** until approved
+(anyone who can comment could write one), and rules that switch off a whole category ("never
+report security issues") are refused.
+
+## 15. Static analysis as signals (`code/tools.py`)
+
+ruff, semgrep (11 rules in `semgrep_rules.yml`) and gitleaks run on the changed files at the
+PR's head, in a temporary folder. Only problems on **added** lines become signals (`S`), so
+the model can cite them; secrets are masked before they are stored or sent. ruff's security
+rules (S) are skipped in test files: fixtures use dummy passwords. In Docker the tools live in
+their own virtualenv; the gitleaks binary is checked against its SHA-256.
+
+## 16. Walkthrough: diagram, effort, merge check (`diagram.py`, `publishing.py`, `triage.py`)
+
+- **Sequence diagram:** Mermaid, accepted only when every line is in a small safe subset (no
+  HTML, links or `%%`) and at least half the named participants come from the code (by name
+  or a telling word of it). Measured on real PRs with qwen 7B: about half the attempts give a
+  diagram; it sometimes draws the PR process instead of the code (a larger model should not).
+- **Review effort:** 1 to 5 (5 min to 2 h) from the lines and files a person reads.
+- **On GitHub:** one walkthrough comment, edited in place by later reviews, and a commit
+  status `codeevidence/review` that fails on findings as severe as `merge_check.block_on`.
+  Without the token's "Commit statuses" permission, the rest is still published.
+
+## 17. Ask CodeEvidence (`chat.py`)
+
+Questions about a PR are answered from its latest review evidence (or its diff), plus code
+found in the repository for the question (`Q`), with citations like `[H2]`; cited ids that
+do not exist are dropped. The dashboard streams answers (server-sent events); on GitHub,
+`@codeevidence <question>` is answered in the thread, once (a hidden marker names the comment
+it answers), and only for people who can write to the repository. Commands: `review`,
+`full review`, `remember <rule>`, `help`. Budget per answer: `CHAT_BUDGET_USD`.

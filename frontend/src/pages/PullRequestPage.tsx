@@ -1,14 +1,16 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { ArrowUpRight, Boxes, FileCode2, Gauge, GitBranch, History, Loader2, ShieldAlert, Sparkles } from 'lucide-react'
-import { AnimatePresence } from 'motion/react'
-import { useEffect, useState } from 'react'
+import { ArrowUpRight, Boxes, ChevronDown, FileCode2, Gauge, GitBranch, History, Loader2, Radar, ShieldAlert, Sparkles } from 'lucide-react'
+import { AnimatePresence, motion } from 'motion/react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import type { Schemas } from '../api/client'
-import { usePullRequest, useQueueReview, useRepository, useReview, useReviewRuns, useRisk } from '../api/hooks'
+import { type ReviewMode, usePullRequest, useQueueReview, useRepository, useReview, useReviewRuns, useRisk } from '../api/hooks'
+import { ChatPanel } from '../components/chat/ChatPanel'
 import { ScoreRing } from '../components/charts/Charts'
 import { EvidenceTab } from '../components/review/EvidenceTab'
 import { FilesTab } from '../components/review/FilesTab'
 import { FindingsTab } from '../components/review/FindingsTab'
+import { ImpactTab } from '../components/review/ImpactTab'
 import { ReviewProgress } from '../components/review/ReviewProgress'
 import { RiskTab } from '../components/review/RiskTab'
 import { RunsTab } from '../components/review/RunsTab'
@@ -20,6 +22,7 @@ import { useToast } from '../components/ui/toast'
 import { TabBar, TabPanel, type TabSpec } from '../components/ui/Tabs'
 import { useTab } from '../components/ui/useTab'
 import { timeAgo } from '../lib/format'
+import { spring } from '../lib/motion'
 
 export function PullRequestPage() {
   const id = Number(useParams().pullRequestId)
@@ -51,6 +54,7 @@ export function PullRequestPage() {
     { id: 'walkthrough', label: 'Walkthrough', icon: Sparkles },
     { id: 'files', label: 'Files changed', icon: FileCode2, count: pullRequest.data?.files.length },
     { id: 'findings', label: 'Findings', icon: ShieldAlert, count: findings.length },
+    { id: 'impact', label: 'Impact', icon: Radar },
     { id: 'risk', label: 'Risk', icon: Gauge },
     { id: 'evidence', label: 'Evidence', icon: Boxes, count: review.data?.evidence.length },
     { id: 'runs', label: 'Runs', icon: History, count: runs.data?.length },
@@ -61,11 +65,14 @@ export function PullRequestPage() {
   if (pullRequest.isError) return <ErrorMessage error={pullRequest.error} />
   const pr = pullRequest.data
 
-  const runReview = () =>
-    queueReview.mutate(undefined, {
+  const runReview = (mode: ReviewMode = 'auto') =>
+    queueReview.mutate(mode, {
       onSuccess: () => {
         setQueued({ runs: runs.data?.length ?? 0, at: Date.now() })
-        toast({ tone: 'info', title: 'AI review queued', description: 'The worker picks it up in a moment.' })
+        const description = mode === 'full'
+          ? 'Every file is reviewed again. The worker picks it up in a moment.'
+          : 'Only what changed since the last review is reviewed, when possible. The worker picks it up in a moment.'
+        toast({ tone: 'info', title: 'AI review queued', description })
       },
       onError: () => toast({ tone: 'error', title: 'Could not queue the review' }),
     })
@@ -75,7 +82,7 @@ export function PullRequestPage() {
   }
 
   return (
-    <div>
+    <div className="pr-page">
       <Header pr={pr} risk={risk.data} reviewing={reviewing || queueReview.isPending} onRunReview={runReview} />
       {queueReview.isError && <div style={{ marginBottom: 16 }}><ErrorMessage error={queueReview.error} /></div>}
       <AnimatePresence>{reviewing && queued && <ReviewProgress since={queued.at} />}</AnimatePresence>
@@ -83,14 +90,75 @@ export function PullRequestPage() {
       <TabPanel id={tab} index={tabs.findIndex((spec) => spec.id === tab)}>
         {review.isError && <ErrorMessage error={review.error} />}
         {tab === 'walkthrough' && (
-          <WalkthroughTab pullRequest={pr} review={review.data} risk={risk.data} onOpenFile={openFile} onRunReview={runReview} />
+          <WalkthroughTab pullRequest={pr} review={review.data} risk={risk.data} onOpenFile={openFile} onRunReview={() => runReview()} />
         )}
         {tab === 'files' && <FilesTab pullRequest={pr} findings={findings} focusPath={focusPath} />}
         {tab === 'findings' && <FindingsTab review={review.data} pullRequestId={id} onShowInDiff={openFile} />}
+        {tab === 'impact' && <ImpactTab pullRequestId={id} repositoryId={pr.repository_id} onOpenFile={openFile} />}
         {tab === 'risk' && <RiskTab risk={risk.data} />}
         {tab === 'evidence' && <EvidenceTab review={review.data} />}
         {tab === 'runs' && <RunsTab runs={runs.data} loading={runs.isPending} />}
       </TabPanel>
+      <ChatPanel pullRequestId={id} onOpenFile={openFile} />
+    </div>
+  )
+}
+
+/** "Run AI review", with a menu for a full review. By default only the files changed since the
+ * last review are reviewed (when the PR got new commits on top of it). */
+function ReviewButton({ reviewing, onRun }: { reviewing: boolean; onRun: (mode: ReviewMode) => void }) {
+  const [menu, setMenu] = useState(false)
+  const box = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!menu) return
+    const close = (event: PointerEvent) => {
+      if (!box.current?.contains(event.target as Node)) setMenu(false)
+    }
+    document.addEventListener('pointerdown', close)
+    return () => document.removeEventListener('pointerdown', close)
+  }, [menu])
+  const run = (mode: ReviewMode) => {
+    setMenu(false)
+    onRun(mode)
+  }
+  return (
+    <div className="split" ref={box} onKeyDown={(event) => event.key === 'Escape' && setMenu(false)}>
+      <button type="button" className="btn ai" onClick={() => run('auto')} disabled={reviewing}>
+        {reviewing ? <Loader2 size={15} className="spin" aria-hidden="true" /> : <Sparkles size={15} aria-hidden="true" />}
+        {reviewing ? 'Reviewing…' : 'Run AI review'}
+      </button>
+      <button
+        type="button"
+        className="btn ai split-toggle"
+        aria-label="Review options"
+        aria-haspopup="menu"
+        aria-expanded={menu}
+        disabled={reviewing}
+        onClick={() => setMenu(!menu)}
+      >
+        <ChevronDown size={14} aria-hidden="true" />
+      </button>
+      <AnimatePresence>
+        {menu && (
+          <motion.div
+            role="menu"
+            className="menu"
+            initial={{ opacity: 0, y: -6, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -4, transition: { duration: 0.12 } }}
+            transition={spring}
+          >
+            <button type="button" role="menuitem" className="menu-item" onClick={() => run('auto')}>
+              <strong>Review new changes</strong>
+              <span className="muted small">Only files changed since the last review; findings on the others are kept</span>
+            </button>
+            <button type="button" role="menuitem" className="menu-item" onClick={() => run('full')}>
+              <strong>Full review</strong>
+              <span className="muted small">Every file again, from scratch</span>
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }
@@ -104,7 +172,7 @@ function Header({
   pr: Schemas['PullRequestDetailWithPatch']
   risk: Schemas['RiskOut'] | null | undefined
   reviewing: boolean
-  onRunReview: () => void
+  onRunReview: (mode: ReviewMode) => void
 }) {
   const repository = useRepository(pr.repository_id)
   const githubUrl = repository.data ? `${repository.data.html_url}/pull/${pr.number}` : null
@@ -140,10 +208,7 @@ function Header({
             GitHub <ArrowUpRight size={14} aria-hidden="true" />
           </a>
         )}
-        <button type="button" className="btn ai" onClick={onRunReview} disabled={reviewing}>
-          {reviewing ? <Loader2 size={15} className="spin" aria-hidden="true" /> : <Sparkles size={15} aria-hidden="true" />}
-          {reviewing ? 'Reviewing…' : 'Run AI review'}
-        </button>
+        <ReviewButton reviewing={reviewing} onRun={onRunReview} />
       </div>
     </div>
   )

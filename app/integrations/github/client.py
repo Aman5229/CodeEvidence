@@ -1,4 +1,5 @@
 import base64
+from urllib.parse import quote
 
 import httpx
 
@@ -147,6 +148,89 @@ class GitHubClient:
       return response.json()
 
 
+  async def get_file(self, repo_full_name: str, path: str, ref: str) -> dict | None:
+    """A file at `ref` as {"sha", "content" (bytes)}, or None when it does not exist."""
+    url = f"{GITHUB_API_URL}/repos/{repo_full_name}/contents/{quote(path)}"
+
+    async with self._http() as client:
+      response = await client.get(url, headers=self._headers, params={"ref": ref})
+      if response.status_code == 404:
+        return None
+      response.raise_for_status()
+      body = response.json()
+      if not isinstance(body, dict) or body.get("type") != "file":
+        return None  # a directory or a symlink
+      return {"sha": body["sha"], "content": base64.b64decode(body.get("content") or "")}
+
+  async def compare_commits(self, repo_full_name: str, base: str, head: str) -> dict:
+    """What changed between two commits: {"status", "files": [{"filename", ...}]}."""
+    url = f"{GITHUB_API_URL}/repos/{repo_full_name}/compare/{base}...{head}"
+
+    async with self._http() as client:
+      response = await client.get(url, headers=self._headers)
+      response.raise_for_status()
+      return response.json()
+
+  async def list_issue_comments(self, repo_full_name: str, issue_number: int) -> list[dict]:
+    """Comments in a PR's conversation (not the inline review comments)."""
+    url = f"{GITHUB_API_URL}/repos/{repo_full_name}/issues/{issue_number}/comments"
+    comments: list[dict] = []
+
+    async with self._http() as client:
+      for page in range(1, MAX_FILE_PAGES + 1):
+        response = await client.get(url, headers=self._headers, params={"per_page": 100, "page": page})
+        response.raise_for_status()
+        batch = response.json()
+        comments.extend(batch)
+        if len(batch) < 100:
+          break
+
+    return comments
+
+  async def create_issue_comment(self, repo_full_name: str, issue_number: int, body: str) -> dict:
+    url = f"{GITHUB_API_URL}/repos/{repo_full_name}/issues/{issue_number}/comments"
+
+    async with self._http() as client:
+      response = await client.post(url, headers=self._headers, json={"body": body})
+      response.raise_for_status()
+      return response.json()
+
+  async def update_issue_comment(self, repo_full_name: str, comment_id: int, body: str) -> dict:
+    url = f"{GITHUB_API_URL}/repos/{repo_full_name}/issues/comments/{comment_id}"
+
+    async with self._http() as client:
+      response = await client.patch(url, headers=self._headers, json={"body": body})
+      response.raise_for_status()
+      return response.json()
+
+  async def reply_to_review_comment(self, repo_full_name: str, pr_number: int, comment_id: int, body: str) -> dict:
+    """Answer inside the thread of an inline review comment."""
+    url = f"{GITHUB_API_URL}/repos/{repo_full_name}/pulls/{pr_number}/comments/{comment_id}/replies"
+
+    async with self._http() as client:
+      response = await client.post(url, headers=self._headers, json={"body": body})
+      response.raise_for_status()
+      return response.json()
+
+  async def create_commit_status(
+    self, repo_full_name: str, sha: str, *, state: str, description: str, context: str, target_url: str
+  ) -> dict:
+    """A pass/fail mark on a commit, shown next to the PR's checks (state: success, failure,
+    pending or error). Needs the token's "Commit statuses: write" permission."""
+    url = f"{GITHUB_API_URL}/repos/{repo_full_name}/statuses/{sha}"
+    body = {"state": state, "description": description[:140], "context": context, "target_url": target_url}
+
+    async with self._http() as client:
+      response = await client.post(url, headers=self._headers, json=body)
+      response.raise_for_status()
+      return response.json()
+
+
 def get_github_client() -> GitHubClient:
   """FastAPI dependency: builds a client from settings (easy to replace in tests)."""
   return GitHubClient(token=settings.github_token)
+
+
+def is_not_found(error: Exception) -> bool:
+  """GitHub answered 404: the thing does not exist (or the token cannot see it)."""
+  return isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 404

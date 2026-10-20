@@ -15,7 +15,7 @@ from app.modules.code.evidence import EvidenceBundle
 from app.modules.review.findings import MAX_FINDINGS
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
-REVIEW_PROMPT = "review_v1"
+REVIEW_PROMPT = "review_v2"
 SUMMARY_PROMPT = "summary_v1"
 SUMMARY_MAX_WORDS = 80
 
@@ -25,9 +25,13 @@ def load_prompt(version: str) -> str:
   return (PROMPTS_DIR / f"{version}.md").read_text()
 
 
+def untrusted_tag(*parts: str) -> str:
+  """A tag name containing a hash of the untrusted text it wraps (see the module docstring)."""
+  return "data-" + hashlib.sha256("\0".join(parts).encode()).hexdigest()[:12]
+
+
 def data_tag(bundle: EvidenceBundle) -> str:
-  content = "\0".join([bundle.title, bundle.description, *(item.text for item in bundle.items)])
-  return "data-" + hashlib.sha256(content.encode()).hexdigest()[:12]
+  return untrusted_tag(bundle.title, bundle.description, *(item.text for item in bundle.items))
 
 
 def render_bundle(bundle: EvidenceBundle, tag: str) -> str:

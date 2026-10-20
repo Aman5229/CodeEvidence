@@ -79,10 +79,15 @@ def load_case(path: Path) -> dict:
 
 
 def replay_case(case: dict) -> CaseResult:
-  """Run the production pipeline on a recorded bundle, with the recorded model answers."""
+  """Run the production pipeline on a recorded bundle, with the recorded model answers.
+
+  The assertive profile shows low-severity findings too: the gate must see every mistake
+  that verification lets through, not have the chill profile hide the small ones.
+  """
   bundle = EvidenceBundle.from_json(case["title"], case["description"], case["evidence"])
   # The model's answers in call order: findings (a repair answer, if one was needed), summary
-  result = run_pipeline(CostMeter(FakeLLM(case["responses"]), REPLAY_BUDGET_USD), bundle, case.get("risk_level"))
+  meter = CostMeter(FakeLLM(case["responses"]), REPLAY_BUDGET_USD)
+  result = run_pipeline(meter, bundle, case.get("risk_level"), profile="assertive")
   labels = {(item["path"], " ".join(item["quote"].split())): item["label"] for item in case["labels"]}
   return CaseResult(case["name"], result, labels)
 

@@ -1,4 +1,4 @@
-import { FolderGit2, KeyRound, LayoutDashboard, ListChecks, Moon, Search, Settings, Sun } from 'lucide-react'
+import { BarChart3, FolderGit2, KeyRound, LayoutDashboard, ListChecks, ListOrdered, Moon, Search, Settings, Sun } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useCallback, useState } from 'react'
 import { NavLink } from 'react-router'
@@ -14,6 +14,8 @@ import { CommandPalette } from './CommandPalette'
 const NAV = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
   { to: '/repositories', label: 'Repositories', icon: FolderGit2, end: false },
+  { to: '/queue', label: 'Review queue', icon: ListOrdered, end: false },
+  { to: '/analytics', label: 'Analytics', icon: BarChart3, end: false },
   { to: '/jobs', label: 'Jobs', icon: ListChecks, end: false },
   { to: '/settings', label: 'Settings', icon: Settings, end: false },
 ]

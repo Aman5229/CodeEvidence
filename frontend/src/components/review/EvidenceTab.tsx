@@ -1,4 +1,4 @@
-import { Boxes, FileDiff, Fingerprint, Layers, Network } from 'lucide-react'
+import { BookOpen, Boxes, FileDiff, Fingerprint, GraduationCap, Layers, Network, Route } from 'lucide-react'
 import { motion } from 'motion/react'
 import type { Schemas } from '../../api/client'
 import { item, list } from '../../lib/motion'
@@ -6,8 +6,11 @@ import { highlightLine, languageOf } from '../diff/highlight'
 import { Empty } from '../ui/States'
 
 const GROUPS = [
-  { kind: 'signal', title: 'Rule signals', icon: Fingerprint, hint: 'Risky patterns found by plain rules: certain, cheap, never invented.' },
+  { kind: 'signal', title: 'Signals', icon: Fingerprint, hint: 'Found by plain rules and static analysis (ruff, semgrep, gitleaks): certain, never invented.' },
+  { kind: 'learning', title: 'Learnings', icon: GraduationCap, hint: 'Rules this team gave in earlier reviews; the reviewer follows them.' },
+  { kind: 'instruction', title: 'Path instructions', icon: Route, hint: 'From .codeevidence.yaml, for the files they match.' },
   { kind: 'hunk', title: 'Diff hunks', icon: FileDiff, hint: 'The change itself, with line numbers.' },
+  { kind: 'guideline', title: 'Repository guidelines', icon: BookOpen, hint: 'CLAUDE.md, AGENTS.md, .cursorrules, copilot-instructions.md, CONTRIBUTING.md, from the default branch.' },
   { kind: 'function', title: 'Enclosing functions', icon: Layers, hint: 'The whole function around each change, at the PR head.' },
   { kind: 'related', title: 'Related code', icon: Network, hint: 'Found in the repository by hybrid search (vector + keyword).' },
 ] as const
@@ -42,7 +45,19 @@ export function EvidenceTab({ review }: { review: Schemas['ReviewOut'] | null | 
                 <details key={item.id} className="evidence-item">
                   <summary>
                     <span className="badge accent">{item.id}</span>
-                    {item.path ? (
+                    {item.id.startsWith('C') && <span className="badge outline" title="Evidence of a finding carried over from an earlier review">earlier review</span>}
+                    {kind === 'learning' || kind === 'instruction' || (kind === 'signal' && item.path) ? (
+                      // short items: say what they are, and where they apply
+                      <>
+                        <span className="truncate">{item.text.split('\n')[0]}</span>
+                        {item.path && (
+                          <code className="muted small nowrap">
+                            {item.path}
+                            {item.start_line != null && `:${item.start_line}`}
+                          </code>
+                        )}
+                      </>
+                    ) : item.path ? (
                       <code className="truncate">
                         {item.path}
                         {item.start_line != null && `:${item.start_line}-${item.end_line}`}
@@ -58,7 +73,7 @@ export function EvidenceTab({ review }: { review: Schemas['ReviewOut'] | null | 
                       <span className="muted small">not cited</span>
                     )}
                   </summary>
-                  {kind === 'hunk' || kind === 'signal' ? (
+                  {kind !== 'function' && kind !== 'related' ? (
                     <pre>{item.text}</pre>
                   ) : (
                     <pre dangerouslySetInnerHTML={{ __html: highlightLine(item.text, item.path ? languageOf(item.path) : null) }} />

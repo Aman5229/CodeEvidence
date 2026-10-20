@@ -1,3 +1,6 @@
+import asyncio
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -7,7 +10,10 @@ from app.api.errors import error_responses
 from app.core.pagination import decode_cursor, encode_cursor
 from app.db.models import PullRequest, PullRequestFile, Repository
 from app.db.session import get_db
+from app.integrations.github.client import GitHubClient, get_github_client
+from app.modules.review.repo_config import load_repo_config
 from app.schemas.page import Page
+from app.schemas.repo_config import RepoConfigOut
 from app.schemas.repository import RepositoryOut, RepositoryStats
 
 from app.core.cache import get_or_set
@@ -126,3 +132,27 @@ def get_repository_stats(
     return stats.model_dump_json()
 
   return Response(content=get_or_set(cache, key, build), media_type="application/json")
+
+
+@router.get(
+  "/{repository_id}/config",
+  response_model=RepoConfigOut,
+  responses=error_responses(404, 422, 503),
+)
+def get_repository_config(
+  repository_id: int, db: Session = Depends(get_db), github: GitHubClient = Depends(get_github_client)
+):
+  """
+  The review settings in `.codeevidence.yaml` on the default branch (or the defaults when
+  there is none), and the guideline files the reviewer reads (CLAUDE.md, AGENTS.md,
+  .cursorrules, CONTRIBUTING.md). Read from GitHub on each call. A broken file is reported
+  in `error`; reviews then use the defaults.
+  """
+  repository = db.get(Repository, repository_id)
+  if repository is None:
+    raise HTTPException(status_code=404, detail="Repository not found")
+  try:
+    loaded = asyncio.run(load_repo_config(github, repository))
+  except httpx.HTTPError as error:
+    raise HTTPException(status_code=503, detail="Could not read the settings from GitHub") from error
+  return RepoConfigOut.model_validate(loaded.summary())

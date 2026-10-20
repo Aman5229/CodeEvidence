@@ -72,7 +72,12 @@ export function FindingsTab({
               animate={{ opacity: 1, y: 0, scale: 1, transition: { ...spring, delay: index * 0.04 } }}
               exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.15 } }}
             >
-              <FindingCard finding={finding} pullRequestId={pullRequestId} onShowInDiff={() => onShowInDiff(finding.path)} />
+              <FindingCard
+                finding={finding}
+                pullRequestId={pullRequestId}
+                pullRequestUrl={review.pull_request_url}
+                onShowInDiff={() => onShowInDiff(finding.path)}
+              />
             </motion.div>
           ))}
         </AnimatePresence>

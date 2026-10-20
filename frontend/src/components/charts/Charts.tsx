@@ -214,3 +214,134 @@ export function Funnel({ stages }: { stages: FunnelStage[] }) {
     </div>
   )
 }
+
+export type RadarSeries = { label: string; color: string; values: (number | null)[] }
+
+/** A spider chart for values between 0 and 1 on a few axes: each series is a polygon that grows
+ * out of the centre. A missing value (null) is drawn at 0 and marked with a hollow dot. */
+export function Radar({ axes, series, label }: { axes: string[]; series: RadarSeries[]; label: string }) {
+  const size = 320
+  const center = size / 2
+  const radius = 112
+  const at = (index: number, value: number) => {
+    const angle = -Math.PI / 2 + (2 * Math.PI * index) / axes.length
+    return [center + radius * value * Math.cos(angle), center + radius * value * Math.sin(angle)] as const
+  }
+  return (
+    <div className="stack" style={{ gap: 8, alignItems: 'center' }}>
+      <svg viewBox={`0 0 ${size} ${size}`} className="radar" role="img" aria-label={label}>
+        {[0.25, 0.5, 0.75, 1].map((ring) => (
+          <polygon key={ring} points={axes.map((_, index) => at(index, ring).join(',')).join(' ')} fill="none" stroke="var(--border)" />
+        ))}
+        {axes.map((axis, index) => {
+          const [x, y] = at(index, 1)
+          const [lx, ly] = at(index, 1.2)
+          return (
+            <g key={axis}>
+              <line x1={center} y1={center} x2={x} y2={y} stroke="var(--border)" />
+              <text x={lx} y={ly + 4} textAnchor={Math.abs(lx - center) < 8 ? 'middle' : lx > center ? 'start' : 'end'} fontSize="11.5" fill="var(--text-2)">
+                {axis}
+              </text>
+            </g>
+          )
+        })}
+        {series.map((entry, seriesIndex) => (
+          <motion.g
+            key={entry.label}
+            initial={{ scale: 0, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ ...softSpring, delay: 0.15 + seriesIndex * 0.2 }}
+            style={{ transformOrigin: `${center}px ${center}px` }}
+          >
+            <polygon
+              points={entry.values.map((value, index) => at(index, value ?? 0).join(',')).join(' ')}
+              fill={entry.color}
+              fillOpacity={0.18}
+              stroke={entry.color}
+              strokeWidth={2}
+            />
+            {entry.values.map((value, index) => {
+              const [x, y] = at(index, value ?? 0)
+              return (
+                <circle key={index} cx={x} cy={y} r={3.5} fill={value == null ? 'var(--bg)' : entry.color} stroke={entry.color}>
+                  <title>{`${entry.label}, ${axes[index]}: ${value == null ? 'no data' : formatPercent(value)}`}</title>
+                </circle>
+              )
+            })}
+          </motion.g>
+        ))}
+      </svg>
+      <div className="row small wrap" style={{ gap: 14 }}>
+        {series.map((entry) => (
+          <span key={entry.label} className="row"><span className="swatch" style={{ background: entry.color }} /> {entry.label}</span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+export type StackPart = { label: string; color: string }
+
+/** Bars per period, each split into parts (e.g. findings shown and dropped), growing in turn. */
+export function StackedBars({
+  periods,
+  parts,
+  values,
+  label,
+}: {
+  periods: string[]
+  parts: StackPart[]
+  values: number[][] // values[period][part]
+  label: string
+}) {
+  const height = 160
+  const bar = 18
+  const gap = 12
+  const width = Math.max(320, periods.length * (bar + gap) + gap)
+  const largest = Math.max(1, ...values.map((row) => row.reduce((sum, value) => sum + value, 0)))
+  return (
+    <div className="stack" style={{ gap: 8 }}>
+      <div style={{ overflowX: 'auto' }}>
+        <svg viewBox={`0 0 ${width} ${height + 24}`} width={width} height={height + 24} role="img" aria-label={label}>
+          {periods.map((period, index) => {
+            const x = gap + index * (bar + gap)
+            let top = height
+            return (
+              <g key={period}>
+                {parts.map((part, partIndex) => {
+                  const value = values[index][partIndex]
+                  const size = (value / largest) * (height - 8)
+                  top -= size
+                  return (
+                    <motion.rect
+                      key={part.label}
+                      x={x}
+                      y={top}
+                      width={bar}
+                      height={size}
+                      rx={3}
+                      fill={part.color}
+                      initial={{ scaleY: 0 }}
+                      animate={{ scaleY: 1 }}
+                      transition={{ ...softSpring, delay: 0.05 + index * 0.04 }}
+                      style={{ transformOrigin: `${x}px ${height}px` }}
+                    >
+                      <title>{`${period}: ${value} ${part.label}`}</title>
+                    </motion.rect>
+                  )
+                })}
+                {(index % Math.ceil(periods.length / 8) === 0 || index === periods.length - 1) && (
+                  <text x={x + bar / 2} y={height + 16} textAnchor="middle" fontSize="10" fill="var(--muted)">{period}</text>
+                )}
+              </g>
+            )
+          })}
+          <line x1={0} y1={height} x2={width} y2={height} stroke="var(--border)" />
+        </svg>
+      </div>
+      <div className="row small wrap" style={{ gap: 14 }}>
+        {parts.map((part) => <span key={part.label} className="row"><span className="swatch" style={{ background: part.color }} /> {part.label}</span>)}
+      </div>
+    </div>
+  )
+}

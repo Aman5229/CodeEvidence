@@ -175,25 +175,34 @@ export function useReview(id: number) {
   })
 }
 
+/** auto: only the files changed since the last review when the PR got new commits on top of
+ * it (incremental); full: everything. */
+export type ReviewMode = 'auto' | 'full'
+
 export function useQueueReview(id: number) {
   return useMutation({
-    mutationFn: async () =>
-      unwrap(await api.POST('/pull-requests/{pull_request_id}/review', { params: { path: { pull_request_id: id } } })),
+    mutationFn: async (mode: ReviewMode = 'auto') =>
+      unwrap(
+        await api.POST('/pull-requests/{pull_request_id}/review', {
+          params: { path: { pull_request_id: id }, query: { mode } },
+        }),
+      ),
   })
 }
 
 type Verdict = 'useful' | 'not_useful'
 
-/** Rate a finding. Optimistic: the count changes at once, and is rolled back if saving fails. */
+/** Rate a finding. Optimistic: the count changes at once, and is rolled back if saving fails.
+ * A reason given with "not useful" becomes a learning for future reviews. */
 export function useFeedback(pullRequestId: number) {
   const queryClient = useQueryClient()
   const key = ['review', pullRequestId]
   return useMutation({
-    mutationFn: async ({ findingId, verdict }: { findingId: number; verdict: Verdict }) =>
+    mutationFn: async ({ findingId, verdict, reason }: { findingId: number; verdict: Verdict; reason?: string }) =>
       unwrap(
         await api.POST('/findings/{finding_id}/feedback', {
           params: { path: { finding_id: findingId } },
-          body: { verdict },
+          body: reason ? { verdict, reason } : { verdict },
         }),
       ),
     onMutate: async ({ findingId, verdict }) => {
@@ -213,5 +222,108 @@ export function useFeedback(pullRequestId: number) {
     },
     onError: (_error, _vars, context) => queryClient.setQueryData(key, context?.before),
     onSettled: () => queryClient.invalidateQueries({ queryKey: key }),
+  })
+}
+
+// ---------- the new review features ----------
+
+/** A 204 (nothing to return) is fine; any other answer without data is an error. */
+function ensureOk(result: { error?: unknown; response: Response }): void {
+  if (!result.response.ok) unwrap({ ...result, data: undefined })
+}
+
+export function useImpact(id: number) {
+  return useQuery({
+    queryKey: ['impact', id],
+    queryFn: async () =>
+      unwrap(await api.GET('/pull-requests/{pull_request_id}/impact', { params: { path: { pull_request_id: id } } })),
+  })
+}
+
+export function useChatHistory(pullRequestId: number) {
+  return useQuery({
+    queryKey: ['chat', pullRequestId],
+    queryFn: async () =>
+      unwrap(
+        await api.GET('/pull-requests/{pull_request_id}/chat', { params: { path: { pull_request_id: pullRequestId } } }),
+      ),
+  })
+}
+
+export function useLearnings(repositoryId: number) {
+  return useQuery({
+    queryKey: ['learnings', repositoryId],
+    queryFn: async () =>
+      unwrap(
+        await api.GET('/repositories/{repository_id}/learnings', { params: { path: { repository_id: repositoryId } } }),
+      ),
+  })
+}
+
+export function useAddLearning(repositoryId: number) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (body: { text: string; path_glob: string | null }) =>
+      unwrap(
+        await api.POST('/repositories/{repository_id}/learnings', {
+          params: { path: { repository_id: repositoryId } },
+          body,
+        }),
+      ),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['learnings', repositoryId] }),
+  })
+}
+
+export type LearningChange = { text?: string; path_glob?: string | null; enabled?: boolean }
+
+export function useChangeLearning(repositoryId: number) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ id, change }: { id: number; change: LearningChange }) =>
+      unwrap(await api.PATCH('/learnings/{learning_id}', { params: { path: { learning_id: id } }, body: change })),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['learnings', repositoryId] }),
+  })
+}
+
+export function useDeleteLearning(repositoryId: number) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (id: number) =>
+      ensureOk(await api.DELETE('/learnings/{learning_id}', { params: { path: { learning_id: id } } })),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['learnings', repositoryId] }),
+  })
+}
+
+export function useRepositoryConfig(repositoryId: number) {
+  return useQuery({
+    queryKey: ['repository-config', repositoryId],
+    queryFn: async () =>
+      unwrap(
+        await api.GET('/repositories/{repository_id}/config', { params: { path: { repository_id: repositoryId } } }),
+      ),
+  })
+}
+
+export function useReviewQueue(repositoryId: number | null) {
+  return useQuery({
+    queryKey: ['review-queue', repositoryId],
+    queryFn: async () =>
+      unwrap(
+        await api.GET('/review-queue', {
+          params: { query: repositoryId == null ? { limit: 100 } : { repository_id: repositoryId, limit: 100 } },
+        }),
+      ),
+  })
+}
+
+export function useAnalytics(days: number, repositoryId: number | null) {
+  return useQuery({
+    queryKey: ['analytics', days, repositoryId],
+    queryFn: async () =>
+      unwrap(
+        await api.GET('/analytics', {
+          params: { query: repositoryId == null ? { days } : { days, repository_id: repositoryId } },
+        }),
+      ),
   })
 }

@@ -25,6 +25,8 @@ class Finding(BaseModel):
   quote: str = Field(min_length=1, max_length=400)  # code copied exactly from the cited evidence
   evidence: list[str] = Field(min_length=1, max_length=5)  # ids such as H1, F2, S1
   suggestion: str | None = Field(default=None, max_length=800)
+  # The complete new text of `line` when a local edit fixes it (a one-click fix on GitHub)
+  replacement: str | None = Field(default=None, max_length=2000)
   confidence: float = Field(ge=0, le=1)
 
 
@@ -44,9 +46,11 @@ Answer again with only the corrected JSON object, nothing else. Previous answer:
 
 
 def parse_findings(text: str) -> FindingsAnswer:
-  """Validate an answer. Accepts bare JSON or JSON inside a ```json block."""
+  """Validate an answer. Accepts bare JSON or JSON inside a ```json block. Line breaks typed
+  inside a string are accepted too (strict=False): models write a multi-line replacement that
+  way, and refusing it would lose every finding of the answer."""
   block = JSON_BLOCK.search(text)
-  return FindingsAnswer.model_validate(json.loads(block.group(1) if block else text.strip()))
+  return FindingsAnswer.model_validate(json.loads(block.group(1) if block else text.strip(), strict=False))
 
 
 def findings_with_repair(meter: CostMeter, system: str, user: str, max_tokens: int) -> tuple[list[Finding], str | None]:

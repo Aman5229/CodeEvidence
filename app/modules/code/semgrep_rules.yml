@@ -1,0 +1,88 @@
+# CodeEvidence's own semgrep rules: a small, reviewed set, so reviews never download rules
+# from the internet. Each rule names one risky pattern and why it matters.
+rules:
+  - id: python-subprocess-shell-true
+    languages: [python]
+    severity: ERROR
+    message: Runs a command through the shell (shell=True); anything user-controlled in it can run arbitrary commands.
+    pattern: subprocess.$FUNC(..., shell=True, ...)
+
+  - id: python-requests-verify-false
+    languages: [python]
+    severity: ERROR
+    message: Turns off TLS certificate checks (verify=False), which allows man-in-the-middle attacks.
+    pattern: requests.$METHOD(..., verify=False, ...)
+
+  - id: python-yaml-unsafe-load
+    languages: [python]
+    severity: ERROR
+    message: yaml.load without a safe Loader can build arbitrary Python objects; use yaml.safe_load.
+    patterns:
+      - pattern: yaml.load(...)
+      - pattern-not: yaml.load(..., Loader=yaml.SafeLoader, ...)
+      - pattern-not: yaml.load(..., Loader=yaml.CSafeLoader, ...)
+      - pattern-not: yaml.load(..., Loader=SafeLoader, ...)
+
+  - id: python-pickle-load
+    languages: [python]
+    severity: WARNING
+    message: Unpickling runs code chosen by whoever made the data; never unpickle untrusted input.
+    pattern-either:
+      - pattern: pickle.loads(...)
+      - pattern: pickle.load(...)
+
+  - id: python-sql-string-building
+    languages: [python]
+    severity: ERROR
+    message: SQL built from strings is open to SQL injection; pass the values as parameters.
+    pattern-either:
+      - pattern: $CURSOR.execute(f"...", ...)
+      - pattern: $CURSOR.execute("..." % $ARGS, ...)
+      - pattern: $CURSOR.execute("..." + $X, ...)
+      - pattern: $CURSOR.execute("...".format(...), ...)
+
+  - id: python-weak-hash
+    languages: [python]
+    severity: WARNING
+    message: MD5 and SHA-1 are broken for security use; use SHA-256, or pass usedforsecurity=False when it is not about security.
+    patterns:
+      - pattern-either:
+          - pattern: hashlib.md5(...)
+          - pattern: hashlib.sha1(...)
+      - pattern-not: hashlib.$F(..., usedforsecurity=False, ...)
+
+  - id: python-flask-debug
+    languages: [python]
+    severity: WARNING
+    message: Running Flask with debug=True exposes an interactive debugger that can run code.
+    pattern: $APP.run(..., debug=True, ...)
+
+  - id: python-jwt-without-verification
+    languages: [python]
+    severity: ERROR
+    message: Decoding a JWT without verifying its signature trusts whatever the token claims.
+    pattern-either:
+      - pattern: 'jwt.decode(..., options={..., "verify_signature": False, ...}, ...)'
+      - pattern: jwt.decode(..., verify=False, ...)
+
+  - id: js-eval
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: eval runs a string as code; anything user-controlled in it becomes code execution.
+    pattern: eval(...)
+
+  - id: js-inner-html
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: Setting innerHTML from dynamic content allows cross-site scripting; use textContent or sanitize it.
+    patterns:
+      - pattern: $EL.innerHTML = $VALUE
+      - pattern-not: $EL.innerHTML = "..."
+
+  - id: js-child-process-exec
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: exec runs a whole string through the shell; use execFile or spawn with an argument list.
+    pattern-either:
+      - pattern: child_process.exec(...)
+      - pattern: require("child_process").exec(...)

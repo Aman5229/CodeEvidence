@@ -161,7 +161,7 @@
           "insights"
         ],
         "summary": "Overview",
-        "description": "Totals for the dashboard: PRs, risk levels, reviews, findings, feedback and cost.\n\nFindings are counted on reviews that called the model; reviews reused from the cache\nrepeat earlier findings and would count them twice.",
+        "description": "Totals for the dashboard: PRs, risk levels, reviews, findings, feedback and cost.\n\nFindings are counted on reviews that called the model, when the model raised them: reviews\nreused from the cache, and findings an incremental review carried over, would count them twice.",
         "operationId": "overview_overview_get",
         "responses": {
           "200": {
@@ -706,6 +706,94 @@
         }
       }
     },
+    "/repositories/{repository_id}/config": {
+      "get": {
+        "tags": [
+          "repositories"
+        ],
+        "summary": "Get Repository Config",
+        "description": "The review settings in `.codeevidence.yaml` on the default branch (or the defaults when\nthere is none), and the guideline files the reviewer reads (CLAUDE.md, AGENTS.md,\n.cursorrules, CONTRIBUTING.md). Read from GitHub on each call. A broken file is reported\nin `error`; reviews then use the defaults.",
+        "operationId": "get_repository_config_repositories__repository_id__config_get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "repository_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Repository Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoConfigOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials: API key, or webhook signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; wait for the time in the Retry-After header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter has the wrong type or value",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A dependency is unavailable; retry later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/repositories/{repository_id}/pull-requests": {
       "get": {
         "tags": [
@@ -1096,7 +1184,7 @@
           "reviews"
         ],
         "summary": "Get Review",
-        "description": "The PR's latest AI review: a short summary and the findings that passed verification,\nbest first, each with the evidence it cites and the feedback it received. Queue a review\nwith POST on the same path.",
+        "description": "The PR's latest AI review: a short summary, a diagram of the change, the estimated review\neffort, and the findings that passed verification, best first, each with the evidence it\ncites, a one-click fix when there is one, and the feedback it received. Queue a review\nwith POST on the same path.",
         "operationId": "get_review_pull_requests__pull_request_id__review_get",
         "security": [
           {
@@ -1172,7 +1260,7 @@
           "reviews"
         ],
         "summary": "Queue Review",
-        "description": "Queue an AI review of the PR. An identical earlier review is reused at no cost.",
+        "description": "Queue an AI review of the PR. `mode=auto`: when the PR got new commits on top of its last\nreview, only the files changed since are reviewed and the other findings are carried over\n(incremental); otherwise everything is. `mode=full`: always everything. An identical\nearlier review is reused at no cost.",
         "operationId": "queue_review_pull_requests__pull_request_id__review_post",
         "security": [
           {
@@ -1187,6 +1275,20 @@
             "schema": {
               "type": "integer",
               "title": "Pull Request Id"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "auto",
+                "full"
+              ],
+              "type": "string",
+              "default": "auto",
+              "title": "Mode"
             }
           }
         ],
@@ -1260,7 +1362,7 @@
           "reviews"
         ],
         "summary": "List Reviews",
-        "description": "Every review run of the PR, newest first: model, prompt, cost and how many findings\nwere shown or dropped. The findings of the latest run come from GET .../review.",
+        "description": "Every review run of the PR, newest first: full or incremental, model, prompt, cost and\nhow many findings were shown or dropped. The findings of the latest run come from\nGET .../review.",
         "operationId": "list_reviews_pull_requests__pull_request_id__reviews_get",
         "security": [
           {
@@ -1342,7 +1444,7 @@
           "reviews"
         ],
         "summary": "Add Feedback",
-        "description": "Rate a finding from the dashboard: useful or not useful.",
+        "description": "Rate a finding from the dashboard: useful or not useful. A reason given with \"not useful\"\nis turned into a learning (a job), so future reviews of the repository avoid the mistake.",
         "operationId": "add_feedback_findings__finding_id__feedback_post",
         "security": [
           {
@@ -1377,6 +1479,825 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/FeedbackOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials: API key, or webhook signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; wait for the time in the Retry-After header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter has the wrong type or value",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pull-requests/{pull_request_id}/impact": {
+      "get": {
+        "tags": [
+          "pull-requests"
+        ],
+        "summary": "Get Impact",
+        "description": "Blast radius: the functions and classes the PR adds, changes or deletes, and the other\ncode in the repository that uses them (from the code index of the default branch).\n\nPython and JavaScript are parsed; for other languages only definitions on added lines are\nfound. Without an index (`indexed` false), dependents are empty: queue one with\nPOST /repositories/{id}/index. File contents are read from GitHub once, then cached.",
+        "operationId": "get_impact_pull_requests__pull_request_id__impact_get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "pull_request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Pull Request Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImpactOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials: API key, or webhook signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; wait for the time in the Retry-After header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter has the wrong type or value",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A dependency is unavailable; retry later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pull-requests/{pull_request_id}/chat": {
+      "get": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Chat History",
+        "description": "The conversation about this PR, oldest first: questions asked in the dashboard or with\n@codeevidence on GitHub, and the answers with the evidence they cite.",
+        "operationId": "chat_history_pull_requests__pull_request_id__chat_get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "pull_request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Pull Request Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ChatMessageOut"
+                  },
+                  "title": "Response Chat History Pull Requests  Pull Request Id  Chat Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials: API key, or webhook signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; wait for the time in the Retry-After header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter has the wrong type or value",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Ask",
+        "description": "Ask a question about the PR. The answer streams as server-sent events:\n- `token`: `{\"text\": \"...\"}`, the next piece of the answer;\n- `done`: `{\"question\", \"answer\", \"unknown_citations\"}`, both messages as stored;\n- `error`: `{\"message\": \"...\"}`, no answer (over budget, or the model failed); nothing is stored.\n\nThe answer uses the PR's latest review evidence (or its diff) plus code found for the\nquestion, and cites it as [H2], [Q1]... Earlier messages give follow-ups their context.",
+        "operationId": "ask_pull_requests__pull_request_id__chat_post",
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "pull_request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Pull Request Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatQuestionIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/event-stream": {
+                "itemSchema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "string"
+                    },
+                    "event": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "retry": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials: API key, or webhook signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; wait for the time in the Retry-After header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter has the wrong type or value",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A dependency is unavailable; retry later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/repositories/{repository_id}/learnings": {
+      "get": {
+        "tags": [
+          "learnings"
+        ],
+        "summary": "List Learnings",
+        "description": "The repository's learnings, newest first. Enabled ones are given to every review whose\nfiles they match; disabled ones (including those proposed on GitHub) are not.",
+        "operationId": "list_learnings_repositories__repository_id__learnings_get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "repository_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Repository Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LearningOut"
+                  },
+                  "title": "Response List Learnings Repositories  Repository Id  Learnings Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials: API key, or webhook signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; wait for the time in the Retry-After header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter has the wrong type or value",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "learnings"
+        ],
+        "summary": "Add Learning",
+        "description": "Write a rule for future reviews of this repository; enabled at once.",
+        "operationId": "add_learning_repositories__repository_id__learnings_post",
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "repository_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Repository Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LearningIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LearningOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials: API key, or webhook signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; wait for the time in the Retry-After header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter has the wrong type or value",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A dependency is unavailable; retry later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/learnings/{learning_id}": {
+      "patch": {
+        "tags": [
+          "learnings"
+        ],
+        "summary": "Change Learning",
+        "description": "Edit a learning, or enable it (approve one proposed on GitHub) or disable it.",
+        "operationId": "change_learning_learnings__learning_id__patch",
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "learning_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Learning Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LearningUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LearningOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials: API key, or webhook signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; wait for the time in the Retry-After header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter has the wrong type or value",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A dependency is unavailable; retry later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "learnings"
+        ],
+        "summary": "Delete Learning",
+        "operationId": "delete_learning_learnings__learning_id__delete",
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "learning_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Learning Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid credentials: API key, or webhook signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; wait for the time in the Retry-After header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter has the wrong type or value",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/review-queue": {
+      "get": {
+        "tags": [
+          "triage"
+        ],
+        "summary": "Review Queue",
+        "description": "Open PRs in the order to review them, highest priority first, each with its band (P1\nreview first, P2, P3), the reasons, an estimated review time and the people who changed\nthe same files before (suggested reviewers). The totals cover every open PR; `items` holds\nthe first `limit`.\n\nPriority mixes the risk score, the model's prediction, how long the PR has waited, and a\nsmall boost for quick reviews; high-severity findings add to it.",
+        "operationId": "review_queue_review_queue_get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "repository_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Repository Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewQueueOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials: API key, or webhook signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; wait for the time in the Retry-After header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter has the wrong type or value",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/analytics": {
+      "get": {
+        "tags": [
+          "insights"
+        ],
+        "summary": "Analytics",
+        "description": "How useful the reviews are, over the last `days` days (one repository, or all): acceptance\nof findings by category, findings and votes per week, results per model and prompt, merge\nrate by risk level, where findings land, why findings were dropped, static analysis\nresults, learnings and chat use.\n\nFindings are counted once, when the model raised them: not again in cached reviews or when\nan incremental review carries them over. `repeats_after_rejection` counts findings raised\nagain after a \ud83d\udc4e on the same problem in the same repository.",
+        "operationId": "analytics_analytics_get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "repository_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Repository Id"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 730,
+              "minimum": 1,
+              "default": 90,
+              "title": "Days"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyticsOut"
                 }
               }
             }
@@ -1717,6 +2638,575 @@
   },
   "components": {
     "schemas": {
+      "AnalyticsOut": {
+        "properties": {
+          "days": {
+            "type": "integer",
+            "title": "Days"
+          },
+          "repository_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repository Id"
+          },
+          "reviews": {
+            "type": "integer",
+            "title": "Reviews"
+          },
+          "reviews_cached": {
+            "type": "integer",
+            "title": "Reviews Cached"
+          },
+          "reviews_incremental": {
+            "type": "integer",
+            "title": "Reviews Incremental"
+          },
+          "cost_usd": {
+            "type": "number",
+            "title": "Cost Usd"
+          },
+          "findings_proposed": {
+            "type": "integer",
+            "title": "Findings Proposed"
+          },
+          "findings_dropped": {
+            "type": "integer",
+            "title": "Findings Dropped"
+          },
+          "findings_shown": {
+            "type": "integer",
+            "title": "Findings Shown"
+          },
+          "votes": {
+            "$ref": "#/components/schemas/VotesOut"
+          },
+          "acceptance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acceptance"
+          },
+          "repeats_after_rejection": {
+            "type": "integer",
+            "title": "Repeats After Rejection"
+          },
+          "learnings_total": {
+            "type": "integer",
+            "title": "Learnings Total"
+          },
+          "learnings_enabled": {
+            "type": "integer",
+            "title": "Learnings Enabled"
+          },
+          "learnings_proposed": {
+            "type": "integer",
+            "title": "Learnings Proposed"
+          },
+          "learnings_applied": {
+            "type": "integer",
+            "title": "Learnings Applied"
+          },
+          "chat_questions": {
+            "type": "integer",
+            "title": "Chat Questions"
+          },
+          "chat_cost_usd": {
+            "type": "number",
+            "title": "Chat Cost Usd"
+          },
+          "categories": {
+            "items": {
+              "$ref": "#/components/schemas/CategoryStatsOut"
+            },
+            "type": "array",
+            "title": "Categories"
+          },
+          "weeks": {
+            "items": {
+              "$ref": "#/components/schemas/WeekStatsOut"
+            },
+            "type": "array",
+            "title": "Weeks"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/ModelStatsOut"
+            },
+            "type": "array",
+            "title": "Models"
+          },
+          "risk_outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/RiskOutcomeOut"
+            },
+            "type": "array",
+            "title": "Risk Outcomes"
+          },
+          "directories": {
+            "items": {
+              "$ref": "#/components/schemas/DirectoryStatsOut"
+            },
+            "type": "array",
+            "title": "Directories"
+          },
+          "drop_reasons": {
+            "items": {
+              "$ref": "#/components/schemas/DropReasonOut"
+            },
+            "type": "array",
+            "title": "Drop Reasons"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ToolStatsOut"
+            },
+            "type": "array",
+            "title": "Tools"
+          }
+        },
+        "type": "object",
+        "required": [
+          "days",
+          "repository_id",
+          "reviews",
+          "reviews_cached",
+          "reviews_incremental",
+          "cost_usd",
+          "findings_proposed",
+          "findings_dropped",
+          "findings_shown",
+          "votes",
+          "acceptance",
+          "repeats_after_rejection",
+          "learnings_total",
+          "learnings_enabled",
+          "learnings_proposed",
+          "learnings_applied",
+          "chat_questions",
+          "chat_cost_usd",
+          "categories",
+          "weeks",
+          "models",
+          "risk_outcomes",
+          "directories",
+          "drop_reasons",
+          "tools"
+        ],
+        "title": "AnalyticsOut"
+      },
+      "CategoryStatsOut": {
+        "properties": {
+          "category": {
+            "type": "string",
+            "title": "Category"
+          },
+          "shown": {
+            "type": "integer",
+            "title": "Shown"
+          },
+          "useful": {
+            "type": "integer",
+            "title": "Useful"
+          },
+          "not_useful": {
+            "type": "integer",
+            "title": "Not Useful"
+          },
+          "acceptance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acceptance"
+          }
+        },
+        "type": "object",
+        "required": [
+          "category",
+          "shown",
+          "useful",
+          "not_useful",
+          "acceptance"
+        ],
+        "title": "CategoryStatsOut"
+      },
+      "ChangedFileOut": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "additions": {
+            "type": "integer",
+            "title": "Additions"
+          },
+          "deletions": {
+            "type": "integer",
+            "title": "Deletions"
+          },
+          "symbols": {
+            "items": {
+              "$ref": "#/components/schemas/ChangedSymbolOut"
+            },
+            "type": "array",
+            "title": "Symbols"
+          }
+        },
+        "type": "object",
+        "required": [
+          "path",
+          "status",
+          "additions",
+          "deletions",
+          "symbols"
+        ],
+        "title": "ChangedFileOut"
+      },
+      "ChangedSymbolOut": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "change": {
+            "type": "string",
+            "title": "Change"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "kind",
+          "change"
+        ],
+        "title": "ChangedSymbolOut"
+      },
+      "ChatMessageOut": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/CitationOut"
+            },
+            "type": "array",
+            "title": "Citations"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "github_user": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Github User"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "role",
+          "content",
+          "citations",
+          "source",
+          "github_user",
+          "model",
+          "cost_usd",
+          "latency_ms",
+          "created_at"
+        ],
+        "title": "ChatMessageOut"
+      },
+      "ChatQuestionIn": {
+        "properties": {
+          "question": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Question"
+          }
+        },
+        "type": "object",
+        "required": [
+          "question"
+        ],
+        "title": "ChatQuestionIn"
+      },
+      "CitationOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
+          "start_line": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Line"
+          },
+          "end_line": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Line"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "path",
+          "start_line",
+          "end_line"
+        ],
+        "title": "CitationOut"
+      },
+      "DependentChunkOut": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "start_line": {
+            "type": "integer",
+            "title": "Start Line"
+          },
+          "end_line": {
+            "type": "integer",
+            "title": "End Line"
+          },
+          "uses": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Uses"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "kind",
+          "start_line",
+          "end_line",
+          "uses"
+        ],
+        "title": "DependentChunkOut"
+      },
+      "DependentFileOut": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "is_test": {
+            "type": "boolean",
+            "title": "Is Test"
+          },
+          "uses": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Uses"
+          },
+          "changed_files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Changed Files"
+          },
+          "chunks": {
+            "items": {
+              "$ref": "#/components/schemas/DependentChunkOut"
+            },
+            "type": "array",
+            "title": "Chunks"
+          }
+        },
+        "type": "object",
+        "required": [
+          "path",
+          "is_test",
+          "uses",
+          "changed_files",
+          "chunks"
+        ],
+        "title": "DependentFileOut"
+      },
+      "DirectoryStatsOut": {
+        "properties": {
+          "directory": {
+            "type": "string",
+            "title": "Directory"
+          },
+          "findings": {
+            "type": "integer",
+            "title": "Findings"
+          },
+          "high": {
+            "type": "integer",
+            "title": "High"
+          }
+        },
+        "type": "object",
+        "required": [
+          "directory",
+          "findings",
+          "high"
+        ],
+        "title": "DirectoryStatsOut"
+      },
+      "DropReasonOut": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason",
+          "count"
+        ],
+        "title": "DropReasonOut"
+      },
+      "EffortOut": {
+        "properties": {
+          "level": {
+            "type": "integer",
+            "title": "Level"
+          },
+          "minutes": {
+            "type": "integer",
+            "title": "Minutes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "level",
+          "minutes"
+        ],
+        "title": "EffortOut"
+      },
       "ErrorDetail": {
         "properties": {
           "code": {
@@ -1880,6 +3370,17 @@
           "text": {
             "type": "string",
             "title": "Text"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
           }
         },
         "type": "object",
@@ -1925,6 +3426,18 @@
               "not_useful"
             ],
             "title": "Verdict"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
           }
         },
         "type": "object",
@@ -1958,6 +3471,17 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At"
+          },
+          "learning_job_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Learning Job Id"
           }
         },
         "type": "object",
@@ -1965,7 +3489,8 @@
           "id",
           "finding_id",
           "verdict",
-          "created_at"
+          "created_at",
+          "learning_job_id"
         ],
         "title": "FeedbackOut"
       },
@@ -2014,6 +3539,32 @@
             ],
             "title": "Suggestion"
           },
+          "replacement": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replacement"
+          },
+          "original_line": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Line"
+          },
+          "agent_prompt": {
+            "type": "string",
+            "title": "Agent Prompt"
+          },
           "confidence": {
             "type": "number",
             "title": "Confidence"
@@ -2038,6 +3589,17 @@
               }
             ],
             "title": "Github Comment Id"
+          },
+          "carried_from_review_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Carried From Review Id"
           }
         },
         "type": "object",
@@ -2051,12 +3613,55 @@
           "claim",
           "quote",
           "suggestion",
+          "replacement",
+          "original_line",
+          "agent_prompt",
           "confidence",
           "evidence",
           "feedback",
-          "github_comment_id"
+          "github_comment_id",
+          "carried_from_review_id"
         ],
         "title": "FindingOut"
+      },
+      "ImpactOut": {
+        "properties": {
+          "pull_request_id": {
+            "type": "integer",
+            "title": "Pull Request Id"
+          },
+          "indexed": {
+            "type": "boolean",
+            "title": "Indexed"
+          },
+          "changed": {
+            "items": {
+              "$ref": "#/components/schemas/ChangedFileOut"
+            },
+            "type": "array",
+            "title": "Changed"
+          },
+          "dependents": {
+            "items": {
+              "$ref": "#/components/schemas/DependentFileOut"
+            },
+            "type": "array",
+            "title": "Dependents"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated"
+          }
+        },
+        "type": "object",
+        "required": [
+          "pull_request_id",
+          "indexed",
+          "changed",
+          "dependents",
+          "truncated"
+        ],
+        "title": "ImpactOut"
       },
       "IndexStatusOut": {
         "properties": {
@@ -2189,6 +3794,180 @@
         ],
         "title": "JobRunOut"
       },
+      "LearningIn": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 10,
+            "title": "Text"
+          },
+          "path_glob": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path Glob"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "LearningIn"
+      },
+      "LearningOut": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "repository_id": {
+            "type": "integer",
+            "title": "Repository Id"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "path_glob": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path Glob"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "source_finding_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Finding Id"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "times_applied": {
+            "type": "integer",
+            "title": "Times Applied"
+          },
+          "last_applied_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Applied At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "repository_id",
+          "text",
+          "path_glob",
+          "source",
+          "source_finding_id",
+          "enabled",
+          "times_applied",
+          "last_applied_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "LearningOut"
+      },
+      "LearningUpdate": {
+        "properties": {
+          "text": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300,
+                "minLength": 10
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "path_glob": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path Glob"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          }
+        },
+        "type": "object",
+        "title": "LearningUpdate",
+        "description": "Only the fields sent are changed; send \"path_glob\": null to apply it everywhere."
+      },
+      "MergeCheck": {
+        "properties": {
+          "block_on": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "never"
+            ],
+            "title": "Block On",
+            "default": "high"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "MergeCheck"
+      },
       "ModelScoreOut": {
         "properties": {
           "version": {
@@ -2211,6 +3990,90 @@
           "flagged"
         ],
         "title": "ModelScoreOut"
+      },
+      "ModelStatsOut": {
+        "properties": {
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "prompt_version": {
+            "type": "string",
+            "title": "Prompt Version"
+          },
+          "reviews": {
+            "type": "integer",
+            "title": "Reviews"
+          },
+          "cached": {
+            "type": "integer",
+            "title": "Cached"
+          },
+          "avg_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Cost Usd"
+          },
+          "avg_latency_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Latency Ms"
+          },
+          "findings_shown": {
+            "type": "integer",
+            "title": "Findings Shown"
+          },
+          "findings_dropped": {
+            "type": "integer",
+            "title": "Findings Dropped"
+          },
+          "useful": {
+            "type": "integer",
+            "title": "Useful"
+          },
+          "not_useful": {
+            "type": "integer",
+            "title": "Not Useful"
+          },
+          "acceptance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acceptance"
+          }
+        },
+        "type": "object",
+        "required": [
+          "model",
+          "prompt_version",
+          "reviews",
+          "cached",
+          "avg_cost_usd",
+          "avg_latency_ms",
+          "findings_shown",
+          "findings_dropped",
+          "useful",
+          "not_useful",
+          "acceptance"
+        ],
+        "title": "ModelStatsOut"
       },
       "OverviewOut": {
         "properties": {
@@ -2365,6 +4228,29 @@
           "items"
         ],
         "title": "Page[RepositoryOut]"
+      },
+      "PathInstruction": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Path"
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Text"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "path",
+          "text"
+        ],
+        "title": "PathInstruction"
       },
       "PullRequestDetailWithPatch": {
         "properties": {
@@ -2747,6 +4633,160 @@
         ],
         "title": "PullRequestTotals"
       },
+      "QueueItemOut": {
+        "properties": {
+          "pull_request_id": {
+            "type": "integer",
+            "title": "Pull Request Id"
+          },
+          "repository_id": {
+            "type": "integer",
+            "title": "Repository Id"
+          },
+          "repository": {
+            "type": "string",
+            "title": "Repository"
+          },
+          "number": {
+            "type": "integer",
+            "title": "Number"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "author_login": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author Login"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "waiting_hours": {
+            "type": "number",
+            "title": "Waiting Hours"
+          },
+          "files_changed": {
+            "type": "integer",
+            "title": "Files Changed"
+          },
+          "lines_changed": {
+            "type": "integer",
+            "title": "Lines Changed"
+          },
+          "risk_score": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Score"
+          },
+          "risk_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Level"
+          },
+          "model_probability": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Probability"
+          },
+          "effort": {
+            "$ref": "#/components/schemas/EffortOut"
+          },
+          "priority": {
+            "type": "number",
+            "title": "Priority"
+          },
+          "band": {
+            "type": "string",
+            "title": "Band"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reasons"
+          },
+          "review_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Status"
+          },
+          "findings_shown": {
+            "type": "integer",
+            "title": "Findings Shown"
+          },
+          "findings_high": {
+            "type": "integer",
+            "title": "Findings High"
+          },
+          "suggested_reviewers": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewerOut"
+            },
+            "type": "array",
+            "title": "Suggested Reviewers"
+          }
+        },
+        "type": "object",
+        "required": [
+          "pull_request_id",
+          "repository_id",
+          "repository",
+          "number",
+          "title",
+          "author_login",
+          "created_at",
+          "waiting_hours",
+          "files_changed",
+          "lines_changed",
+          "risk_score",
+          "risk_level",
+          "model_probability",
+          "effort",
+          "priority",
+          "band",
+          "reasons",
+          "review_status",
+          "findings_shown",
+          "findings_high",
+          "suggested_reviewers"
+        ],
+        "title": "QueueItemOut"
+      },
       "QueuedJobOut": {
         "properties": {
           "job_id": {
@@ -2823,6 +4863,77 @@
           "created_at"
         ],
         "title": "RecentReview"
+      },
+      "RepoConfigOut": {
+        "properties": {
+          "profile": {
+            "type": "string",
+            "enum": [
+              "chill",
+              "assertive"
+            ],
+            "title": "Profile",
+            "default": "chill"
+          },
+          "exclude": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Exclude"
+          },
+          "instructions": {
+            "items": {
+              "$ref": "#/components/schemas/PathInstruction"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "title": "Instructions"
+          },
+          "guidelines": {
+            "type": "boolean",
+            "title": "Guidelines",
+            "default": true
+          },
+          "tools": {
+            "$ref": "#/components/schemas/ToolsConfig"
+          },
+          "merge_check": {
+            "$ref": "#/components/schemas/MergeCheck"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "guideline_files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Guideline Files"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source",
+          "error",
+          "guideline_files"
+        ],
+        "title": "RepoConfigOut",
+        "description": "The review settings of a repository, as read from `.codeevidence.yaml` on its default branch."
       },
       "RepositoryOut": {
         "properties": {
@@ -2959,6 +5070,10 @@
             "type": "integer",
             "title": "Pull Request Id"
           },
+          "pull_request_url": {
+            "type": "string",
+            "title": "Pull Request Url"
+          },
           "head_sha": {
             "type": "string",
             "title": "Head Sha"
@@ -2966,6 +5081,32 @@
           "status": {
             "type": "string",
             "title": "Status"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "base_review_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Review Id"
+          },
+          "compared_from_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compared From Sha"
           },
           "summary": {
             "anyOf": [
@@ -2977,6 +5118,20 @@
               }
             ],
             "title": "Summary"
+          },
+          "diagram": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diagram"
+          },
+          "effort": {
+            "$ref": "#/components/schemas/EffortOut"
           },
           "findings": {
             "items": {
@@ -3028,6 +5183,41 @@
             "type": "integer",
             "title": "Latency Ms"
           },
+          "tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ToolRunOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tools"
+          },
+          "config": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RepoConfigOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "check_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Check State"
+          },
           "published_at": {
             "anyOf": [
               {
@@ -3050,9 +5240,15 @@
         "required": [
           "id",
           "pull_request_id",
+          "pull_request_url",
           "head_sha",
           "status",
+          "mode",
+          "base_review_id",
+          "compared_from_sha",
           "summary",
+          "diagram",
+          "effort",
           "findings",
           "dropped_findings",
           "evidence",
@@ -3064,10 +5260,59 @@
           "output_tokens",
           "cost_usd",
           "latency_ms",
+          "tools",
+          "config",
+          "check_state",
           "published_at",
           "created_at"
         ],
         "title": "ReviewOut"
+      },
+      "ReviewQueueOut": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "p1": {
+            "type": "integer",
+            "title": "P1"
+          },
+          "p2": {
+            "type": "integer",
+            "title": "P2"
+          },
+          "p3": {
+            "type": "integer",
+            "title": "P3"
+          },
+          "total_minutes": {
+            "type": "integer",
+            "title": "Total Minutes"
+          },
+          "not_reviewed": {
+            "type": "integer",
+            "title": "Not Reviewed"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/QueueItemOut"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "p1",
+          "p2",
+          "p3",
+          "total_minutes",
+          "not_reviewed",
+          "items"
+        ],
+        "title": "ReviewQueueOut"
       },
       "ReviewRunOut": {
         "properties": {
@@ -3078,6 +5323,21 @@
           "status": {
             "type": "string",
             "title": "Status"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "base_review_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Review Id"
           },
           "model": {
             "type": "string",
@@ -3119,6 +5379,17 @@
             "type": "integer",
             "title": "Findings Dropped"
           },
+          "check_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Check State"
+          },
           "published_at": {
             "anyOf": [
               {
@@ -3141,6 +5412,8 @@
         "required": [
           "id",
           "status",
+          "mode",
+          "base_review_id",
           "model",
           "prompt_version",
           "cached",
@@ -3151,11 +5424,36 @@
           "latency_ms",
           "findings_shown",
           "findings_dropped",
+          "check_state",
           "published_at",
           "created_at"
         ],
         "title": "ReviewRunOut",
         "description": "One review run, without its findings: the PR's review history."
+      },
+      "ReviewerOut": {
+        "properties": {
+          "login": {
+            "type": "string",
+            "title": "Login"
+          },
+          "files_touched": {
+            "type": "integer",
+            "title": "Files Touched"
+          },
+          "last_touched_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Last Touched At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "login",
+          "files_touched",
+          "last_touched_at"
+        ],
+        "title": "ReviewerOut"
       },
       "RiskFeaturesOut": {
         "properties": {
@@ -3280,6 +5578,41 @@
         ],
         "title": "RiskOut"
       },
+      "RiskOutcomeOut": {
+        "properties": {
+          "level": {
+            "type": "string",
+            "title": "Level"
+          },
+          "closed": {
+            "type": "integer",
+            "title": "Closed"
+          },
+          "merged": {
+            "type": "integer",
+            "title": "Merged"
+          },
+          "merge_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Merge Rate"
+          }
+        },
+        "type": "object",
+        "required": [
+          "level",
+          "closed",
+          "merged",
+          "merge_rate"
+        ],
+        "title": "RiskOutcomeOut"
+      },
       "RiskReasonOut": {
         "properties": {
           "code": {
@@ -3340,6 +5673,163 @@
           "level"
         ],
         "title": "RiskyPullRequest"
+      },
+      "ToolRunOut": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "ran": {
+            "type": "boolean",
+            "title": "Ran"
+          },
+          "findings": {
+            "type": "integer",
+            "title": "Findings"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "title": "Duration Ms"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "ran",
+          "findings",
+          "error",
+          "duration_ms"
+        ],
+        "title": "ToolRunOut"
+      },
+      "ToolStatsOut": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "runs": {
+            "type": "integer",
+            "title": "Runs"
+          },
+          "findings": {
+            "type": "integer",
+            "title": "Findings"
+          },
+          "skipped": {
+            "type": "integer",
+            "title": "Skipped"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "runs",
+          "findings",
+          "skipped"
+        ],
+        "title": "ToolStatsOut"
+      },
+      "ToolsConfig": {
+        "properties": {
+          "ruff": {
+            "type": "boolean",
+            "title": "Ruff",
+            "default": true
+          },
+          "semgrep": {
+            "type": "boolean",
+            "title": "Semgrep",
+            "default": true
+          },
+          "gitleaks": {
+            "type": "boolean",
+            "title": "Gitleaks",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ToolsConfig"
+      },
+      "VotesOut": {
+        "properties": {
+          "useful": {
+            "type": "integer",
+            "title": "Useful"
+          },
+          "not_useful": {
+            "type": "integer",
+            "title": "Not Useful"
+          }
+        },
+        "type": "object",
+        "required": [
+          "useful",
+          "not_useful"
+        ],
+        "title": "VotesOut"
+      },
+      "WeekStatsOut": {
+        "properties": {
+          "week": {
+            "type": "string",
+            "format": "date",
+            "title": "Week"
+          },
+          "reviews": {
+            "type": "integer",
+            "title": "Reviews"
+          },
+          "cost_usd": {
+            "type": "number",
+            "title": "Cost Usd"
+          },
+          "proposed": {
+            "type": "integer",
+            "title": "Proposed"
+          },
+          "dropped": {
+            "type": "integer",
+            "title": "Dropped"
+          },
+          "shown": {
+            "type": "integer",
+            "title": "Shown"
+          },
+          "useful": {
+            "type": "integer",
+            "title": "Useful"
+          },
+          "not_useful": {
+            "type": "integer",
+            "title": "Not Useful"
+          }
+        },
+        "type": "object",
+        "required": [
+          "week",
+          "reviews",
+          "cost_usd",
+          "proposed",
+          "dropped",
+          "shown",
+          "useful",
+          "not_useful"
+        ],
+        "title": "WeekStatsOut"
       }
     },
     "securitySchemes": {

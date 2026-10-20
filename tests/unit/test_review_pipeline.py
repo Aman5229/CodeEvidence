@@ -20,7 +20,7 @@ from app.modules.review.llm import (
 )
 from app.modules.review.pipeline import run_pipeline
 from app.modules.review.prompts import data_tag, review_messages, summary_messages
-from app.modules.review.ranking import MAX_COMMENTS, finding_key, rank_findings
+from app.modules.review.ranking import ASSERTIVE_MAX_COMMENTS, MAX_COMMENTS, finding_key, rank_findings
 from app.modules.review.summary import mentions_unknown_files, summarize, trim_words
 from app.modules.review.verification import verify
 
@@ -60,6 +60,19 @@ def meter(*answers: str, budget: float = 10.0) -> CostMeter:
 
 def test_json_in_a_code_block_is_accepted():
   assert parse_findings(f"Sure!\n```json\n{answer(finding())}\n```").findings[0].line == 5
+
+
+def test_line_breaks_typed_inside_a_string_are_accepted():
+  """Seen from qwen2.5-coder: a multi-line replacement with real line breaks, which strict JSON
+  refuses. The whole answer, with every finding, was lost before."""
+  text = '{"findings": [{"path": "app/fetch.py", "line": 5, "severity": "high", "category": "security", ' \
+    '"claim": "eval runs whatever the server sends back.", "quote": "data = eval(response.text)", "evidence": ["H1"], ' \
+    '"replacement": "    if not response.ok:\n        return None\n    data = response.json()", "confidence": 0.9}]}'
+  assert "\n" in text  # in this Python string, \n is a real line break inside the JSON string
+
+  (parsed,) = parse_findings(text).findings
+
+  assert parsed.replacement == "    if not response.ok:\n        return None\n    data = response.json()"
 
 
 def test_invalid_answer_is_repaired_once():
@@ -157,7 +170,28 @@ def test_rank_by_severity_confidence_and_signal_support():
   medium = finding(severity="medium", line=6, quote="return data", evidence=["H1"], category="bug")
   high = finding()
 
-  assert [f.severity for f in rank_findings([low, medium, high], "high")] == ["high", "medium", "low"]
+  assert [f.severity for f in rank_findings([low, medium, high], "high", "assertive")] == ["high", "medium", "low"]
+
+
+def test_chill_profile_leaves_out_low_severity_unless_a_signal_backs_it():
+  plain_low = finding(severity="low", line=4, quote="response = requests.get(url)", evidence=["H1"], category="performance")
+  backed_low = finding(severity="low", evidence=["H1", "S1"], category="maintainability")
+
+  assert rank_findings([plain_low, backed_low], "high") == [backed_low]  # chill is the default
+  assert len(rank_findings([plain_low, backed_low], "high", "assertive")) == 2
+
+
+def test_assertive_profile_allows_more_comments():
+  many = [finding(path=f"f{i}.py", confidence=0.6 + i / 100) for i in range(10)]
+
+  assert len(rank_findings(many, "low", "assertive")) == ASSERTIVE_MAX_COMMENTS["low"] > MAX_COMMENTS["low"]
+
+
+def test_signal_ids_decide_signal_support_for_renumbered_evidence():
+  carried = finding(severity="low", evidence=["C1", "C2"])  # C2 was a signal in the earlier review
+
+  assert rank_findings([carried], "high", signal_ids={"C2"}) == [carried]
+  assert rank_findings([carried], "high", signal_ids={"S1"}) == []  # cites no signal
 
 
 def test_near_duplicates_are_merged_and_the_list_is_capped():

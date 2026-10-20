@@ -82,8 +82,8 @@ export interface paths {
          * Overview
          * @description Totals for the dashboard: PRs, risk levels, reviews, findings, feedback and cost.
          *
-         *     Findings are counted on reviews that called the model; reviews reused from the cache
-         *     repeat earlier findings and would count them twice.
+         *     Findings are counted on reviews that called the model, when the model raised them: reviews
+         *     reused from the cache, and findings an incremental review carried over, would count them twice.
          */
         get: operations["overview_overview_get"];
         put?: never;
@@ -194,6 +194,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/repositories/{repository_id}/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Repository Config
+         * @description The review settings in `.codeevidence.yaml` on the default branch (or the defaults when
+         *     there is none), and the guideline files the reviewer reads (CLAUDE.md, AGENTS.md,
+         *     .cursorrules, CONTRIBUTING.md). Read from GitHub on each call. A broken file is reported
+         *     in `error`; reviews then use the defaults.
+         */
+        get: operations["get_repository_config_repositories__repository_id__config_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/repositories/{repository_id}/pull-requests": {
         parameters: {
             query?: never;
@@ -268,15 +291,19 @@ export interface paths {
         };
         /**
          * Get Review
-         * @description The PR's latest AI review: a short summary and the findings that passed verification,
-         *     best first, each with the evidence it cites and the feedback it received. Queue a review
+         * @description The PR's latest AI review: a short summary, a diagram of the change, the estimated review
+         *     effort, and the findings that passed verification, best first, each with the evidence it
+         *     cites, a one-click fix when there is one, and the feedback it received. Queue a review
          *     with POST on the same path.
          */
         get: operations["get_review_pull_requests__pull_request_id__review_get"];
         put?: never;
         /**
          * Queue Review
-         * @description Queue an AI review of the PR. An identical earlier review is reused at no cost.
+         * @description Queue an AI review of the PR. `mode=auto`: when the PR got new commits on top of its last
+         *     review, only the files changed since are reviewed and the other findings are carried over
+         *     (incremental); otherwise everything is. `mode=full`: always everything. An identical
+         *     earlier review is reused at no cost.
          */
         post: operations["queue_review_pull_requests__pull_request_id__review_post"];
         delete?: never;
@@ -294,8 +321,9 @@ export interface paths {
         };
         /**
          * List Reviews
-         * @description Every review run of the PR, newest first: model, prompt, cost and how many findings
-         *     were shown or dropped. The findings of the latest run come from GET .../review.
+         * @description Every review run of the PR, newest first: full or incremental, model, prompt, cost and
+         *     how many findings were shown or dropped. The findings of the latest run come from
+         *     GET .../review.
          */
         get: operations["list_reviews_pull_requests__pull_request_id__reviews_get"];
         put?: never;
@@ -317,9 +345,165 @@ export interface paths {
         put?: never;
         /**
          * Add Feedback
-         * @description Rate a finding from the dashboard: useful or not useful.
+         * @description Rate a finding from the dashboard: useful or not useful. A reason given with "not useful"
+         *     is turned into a learning (a job), so future reviews of the repository avoid the mistake.
          */
         post: operations["add_feedback_findings__finding_id__feedback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/pull-requests/{pull_request_id}/impact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Impact
+         * @description Blast radius: the functions and classes the PR adds, changes or deletes, and the other
+         *     code in the repository that uses them (from the code index of the default branch).
+         *
+         *     Python and JavaScript are parsed; for other languages only definitions on added lines are
+         *     found. Without an index (`indexed` false), dependents are empty: queue one with
+         *     POST /repositories/{id}/index. File contents are read from GitHub once, then cached.
+         */
+        get: operations["get_impact_pull_requests__pull_request_id__impact_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/pull-requests/{pull_request_id}/chat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Chat History
+         * @description The conversation about this PR, oldest first: questions asked in the dashboard or with
+         *     @codeevidence on GitHub, and the answers with the evidence they cite.
+         */
+        get: operations["chat_history_pull_requests__pull_request_id__chat_get"];
+        put?: never;
+        /**
+         * Ask
+         * @description Ask a question about the PR. The answer streams as server-sent events:
+         *     - `token`: `{"text": "..."}`, the next piece of the answer;
+         *     - `done`: `{"question", "answer", "unknown_citations"}`, both messages as stored;
+         *     - `error`: `{"message": "..."}`, no answer (over budget, or the model failed); nothing is stored.
+         *
+         *     The answer uses the PR's latest review evidence (or its diff) plus code found for the
+         *     question, and cites it as [H2], [Q1]... Earlier messages give follow-ups their context.
+         */
+        post: operations["ask_pull_requests__pull_request_id__chat_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/repositories/{repository_id}/learnings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Learnings
+         * @description The repository's learnings, newest first. Enabled ones are given to every review whose
+         *     files they match; disabled ones (including those proposed on GitHub) are not.
+         */
+        get: operations["list_learnings_repositories__repository_id__learnings_get"];
+        put?: never;
+        /**
+         * Add Learning
+         * @description Write a rule for future reviews of this repository; enabled at once.
+         */
+        post: operations["add_learning_repositories__repository_id__learnings_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/learnings/{learning_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Learning */
+        delete: operations["delete_learning_learnings__learning_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Change Learning
+         * @description Edit a learning, or enable it (approve one proposed on GitHub) or disable it.
+         */
+        patch: operations["change_learning_learnings__learning_id__patch"];
+        trace?: never;
+    };
+    "/review-queue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Review Queue
+         * @description Open PRs in the order to review them, highest priority first, each with its band (P1
+         *     review first, P2, P3), the reasons, an estimated review time and the people who changed
+         *     the same files before (suggested reviewers). The totals cover every open PR; `items` holds
+         *     the first `limit`.
+         *
+         *     Priority mixes the risk score, the model's prediction, how long the PR has waited, and a
+         *     small boost for quick reviews; high-severity findings add to it.
+         */
+        get: operations["review_queue_review_queue_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/analytics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Analytics
+         * @description How useful the reviews are, over the last `days` days (one repository, or all): acceptance
+         *     of findings by category, findings and votes per week, results per model and prompt, merge
+         *     rate by risk level, where findings land, why findings were dropped, static analysis
+         *     results, learnings and chat use.
+         *
+         *     Findings are counted once, when the model raised them: not again in cached reviews or when
+         *     an incremental review carries them over. `repeats_after_rejection` counts findings raised
+         *     again after a 👎 on the same problem in the same repository.
+         */
+        get: operations["analytics_analytics_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -391,6 +575,186 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AnalyticsOut */
+        AnalyticsOut: {
+            /** Days */
+            days: number;
+            /** Repository Id */
+            repository_id: number | null;
+            /** Reviews */
+            reviews: number;
+            /** Reviews Cached */
+            reviews_cached: number;
+            /** Reviews Incremental */
+            reviews_incremental: number;
+            /** Cost Usd */
+            cost_usd: number;
+            /** Findings Proposed */
+            findings_proposed: number;
+            /** Findings Dropped */
+            findings_dropped: number;
+            /** Findings Shown */
+            findings_shown: number;
+            votes: components["schemas"]["VotesOut"];
+            /** Acceptance */
+            acceptance: number | null;
+            /** Repeats After Rejection */
+            repeats_after_rejection: number;
+            /** Learnings Total */
+            learnings_total: number;
+            /** Learnings Enabled */
+            learnings_enabled: number;
+            /** Learnings Proposed */
+            learnings_proposed: number;
+            /** Learnings Applied */
+            learnings_applied: number;
+            /** Chat Questions */
+            chat_questions: number;
+            /** Chat Cost Usd */
+            chat_cost_usd: number;
+            /** Categories */
+            categories: components["schemas"]["CategoryStatsOut"][];
+            /** Weeks */
+            weeks: components["schemas"]["WeekStatsOut"][];
+            /** Models */
+            models: components["schemas"]["ModelStatsOut"][];
+            /** Risk Outcomes */
+            risk_outcomes: components["schemas"]["RiskOutcomeOut"][];
+            /** Directories */
+            directories: components["schemas"]["DirectoryStatsOut"][];
+            /** Drop Reasons */
+            drop_reasons: components["schemas"]["DropReasonOut"][];
+            /** Tools */
+            tools: components["schemas"]["ToolStatsOut"][];
+        };
+        /** CategoryStatsOut */
+        CategoryStatsOut: {
+            /** Category */
+            category: string;
+            /** Shown */
+            shown: number;
+            /** Useful */
+            useful: number;
+            /** Not Useful */
+            not_useful: number;
+            /** Acceptance */
+            acceptance: number | null;
+        };
+        /** ChangedFileOut */
+        ChangedFileOut: {
+            /** Path */
+            path: string;
+            /** Status */
+            status: string;
+            /** Additions */
+            additions: number;
+            /** Deletions */
+            deletions: number;
+            /** Symbols */
+            symbols: components["schemas"]["ChangedSymbolOut"][];
+        };
+        /** ChangedSymbolOut */
+        ChangedSymbolOut: {
+            /** Name */
+            name: string;
+            /** Kind */
+            kind: string;
+            /** Change */
+            change: string;
+        };
+        /** ChatMessageOut */
+        ChatMessageOut: {
+            /** Id */
+            id: number;
+            /** Role */
+            role: string;
+            /** Content */
+            content: string;
+            /** Citations */
+            citations: components["schemas"]["CitationOut"][];
+            /** Source */
+            source: string;
+            /** Github User */
+            github_user: string | null;
+            /** Model */
+            model: string | null;
+            /** Cost Usd */
+            cost_usd: number | null;
+            /** Latency Ms */
+            latency_ms: number | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** ChatQuestionIn */
+        ChatQuestionIn: {
+            /** Question */
+            question: string;
+        };
+        /** CitationOut */
+        CitationOut: {
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Path */
+            path: string | null;
+            /** Start Line */
+            start_line: number | null;
+            /** End Line */
+            end_line: number | null;
+        };
+        /** DependentChunkOut */
+        DependentChunkOut: {
+            /** Name */
+            name: string | null;
+            /** Kind */
+            kind: string;
+            /** Start Line */
+            start_line: number;
+            /** End Line */
+            end_line: number;
+            /** Uses */
+            uses: string[];
+        };
+        /** DependentFileOut */
+        DependentFileOut: {
+            /** Path */
+            path: string;
+            /** Is Test */
+            is_test: boolean;
+            /** Uses */
+            uses: string[];
+            /** Changed Files */
+            changed_files: string[];
+            /** Chunks */
+            chunks: components["schemas"]["DependentChunkOut"][];
+        };
+        /** DirectoryStatsOut */
+        DirectoryStatsOut: {
+            /** Directory */
+            directory: string;
+            /** Findings */
+            findings: number;
+            /** High */
+            high: number;
+        };
+        /** DropReasonOut */
+        DropReasonOut: {
+            /** Reason */
+            reason: string;
+            /** Count */
+            count: number;
+        };
+        /** EffortOut */
+        EffortOut: {
+            /** Level */
+            level: number;
+            /** Minutes */
+            minutes: number;
+        };
         /** ErrorDetail */
         ErrorDetail: {
             /** Code */
@@ -448,6 +812,8 @@ export interface components {
             end_line: number | null;
             /** Text */
             text: string;
+            /** Source Id */
+            source_id?: number | null;
         };
         /** FeedbackCounts */
         FeedbackCounts: {
@@ -465,6 +831,8 @@ export interface components {
              * @enum {string}
              */
             verdict: "useful" | "not_useful";
+            /** Reason */
+            reason?: string | null;
         };
         /** FeedbackOut */
         FeedbackOut: {
@@ -479,6 +847,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Learning Job Id */
+            learning_job_id: number | null;
         };
         /** FindingOut */
         FindingOut: {
@@ -500,6 +870,12 @@ export interface components {
             quote: string;
             /** Suggestion */
             suggestion: string | null;
+            /** Replacement */
+            replacement: string | null;
+            /** Original Line */
+            original_line: string | null;
+            /** Agent Prompt */
+            agent_prompt: string;
             /** Confidence */
             confidence: number;
             /** Evidence */
@@ -507,6 +883,21 @@ export interface components {
             feedback: components["schemas"]["FeedbackCounts"];
             /** Github Comment Id */
             github_comment_id: number | null;
+            /** Carried From Review Id */
+            carried_from_review_id: number | null;
+        };
+        /** ImpactOut */
+        ImpactOut: {
+            /** Pull Request Id */
+            pull_request_id: number;
+            /** Indexed */
+            indexed: boolean;
+            /** Changed */
+            changed: components["schemas"]["ChangedFileOut"][];
+            /** Dependents */
+            dependents: components["schemas"]["DependentFileOut"][];
+            /** Truncated */
+            truncated: boolean;
         };
         /** IndexStatusOut */
         IndexStatusOut: {
@@ -552,6 +943,65 @@ export interface components {
             /** Finished At */
             finished_at: string | null;
         };
+        /** LearningIn */
+        LearningIn: {
+            /** Text */
+            text: string;
+            /** Path Glob */
+            path_glob?: string | null;
+        };
+        /** LearningOut */
+        LearningOut: {
+            /** Id */
+            id: number;
+            /** Repository Id */
+            repository_id: number;
+            /** Text */
+            text: string;
+            /** Path Glob */
+            path_glob: string | null;
+            /** Source */
+            source: string;
+            /** Source Finding Id */
+            source_finding_id: number | null;
+            /** Enabled */
+            enabled: boolean;
+            /** Times Applied */
+            times_applied: number;
+            /** Last Applied At */
+            last_applied_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * LearningUpdate
+         * @description Only the fields sent are changed; send "path_glob": null to apply it everywhere.
+         */
+        LearningUpdate: {
+            /** Text */
+            text?: string | null;
+            /** Path Glob */
+            path_glob?: string | null;
+            /** Enabled */
+            enabled?: boolean | null;
+        };
+        /** MergeCheck */
+        MergeCheck: {
+            /**
+             * Block On
+             * @default high
+             * @enum {string}
+             */
+            block_on: "high" | "medium" | "never";
+        };
         /** ModelScoreOut */
         ModelScoreOut: {
             /** Version */
@@ -560,6 +1010,31 @@ export interface components {
             probability: number;
             /** Flagged */
             flagged: boolean;
+        };
+        /** ModelStatsOut */
+        ModelStatsOut: {
+            /** Model */
+            model: string;
+            /** Prompt Version */
+            prompt_version: string;
+            /** Reviews */
+            reviews: number;
+            /** Cached */
+            cached: number;
+            /** Avg Cost Usd */
+            avg_cost_usd: number | null;
+            /** Avg Latency Ms */
+            avg_latency_ms: number | null;
+            /** Findings Shown */
+            findings_shown: number;
+            /** Findings Dropped */
+            findings_dropped: number;
+            /** Useful */
+            useful: number;
+            /** Not Useful */
+            not_useful: number;
+            /** Acceptance */
+            acceptance: number | null;
         };
         /** OverviewOut */
         OverviewOut: {
@@ -607,6 +1082,13 @@ export interface components {
             items: components["schemas"]["RepositoryOut"][];
             /** Next Cursor */
             next_cursor?: string | null;
+        };
+        /** PathInstruction */
+        PathInstruction: {
+            /** Path */
+            path: string;
+            /** Text */
+            text: string;
         };
         /** PullRequestDetailWithPatch */
         PullRequestDetailWithPatch: {
@@ -728,6 +1210,53 @@ export interface components {
             /** Lines Changed */
             lines_changed: number;
         };
+        /** QueueItemOut */
+        QueueItemOut: {
+            /** Pull Request Id */
+            pull_request_id: number;
+            /** Repository Id */
+            repository_id: number;
+            /** Repository */
+            repository: string;
+            /** Number */
+            number: number;
+            /** Title */
+            title: string;
+            /** Author Login */
+            author_login: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Waiting Hours */
+            waiting_hours: number;
+            /** Files Changed */
+            files_changed: number;
+            /** Lines Changed */
+            lines_changed: number;
+            /** Risk Score */
+            risk_score: number | null;
+            /** Risk Level */
+            risk_level: string | null;
+            /** Model Probability */
+            model_probability: number | null;
+            effort: components["schemas"]["EffortOut"];
+            /** Priority */
+            priority: number;
+            /** Band */
+            band: string;
+            /** Reasons */
+            reasons: string[];
+            /** Review Status */
+            review_status: string | null;
+            /** Findings Shown */
+            findings_shown: number;
+            /** Findings High */
+            findings_high: number;
+            /** Suggested Reviewers */
+            suggested_reviewers: components["schemas"]["ReviewerOut"][];
+        };
         /** QueuedJobOut */
         QueuedJobOut: {
             /** Job Id */
@@ -760,6 +1289,35 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /**
+         * RepoConfigOut
+         * @description The review settings of a repository, as read from `.codeevidence.yaml` on its default branch.
+         */
+        RepoConfigOut: {
+            /**
+             * Profile
+             * @default chill
+             * @enum {string}
+             */
+            profile: "chill" | "assertive";
+            /** Exclude */
+            exclude?: string[];
+            /** Instructions */
+            instructions?: components["schemas"]["PathInstruction"][];
+            /**
+             * Guidelines
+             * @default true
+             */
+            guidelines: boolean;
+            tools?: components["schemas"]["ToolsConfig"];
+            merge_check?: components["schemas"]["MergeCheck"];
+            /** Source */
+            source: string;
+            /** Error */
+            error: string | null;
+            /** Guideline Files */
+            guideline_files: string[];
         };
         /** RepositoryOut */
         RepositoryOut: {
@@ -808,12 +1366,23 @@ export interface components {
             id: number;
             /** Pull Request Id */
             pull_request_id: number;
+            /** Pull Request Url */
+            pull_request_url: string;
             /** Head Sha */
             head_sha: string;
             /** Status */
             status: string;
+            /** Mode */
+            mode: string;
+            /** Base Review Id */
+            base_review_id: number | null;
+            /** Compared From Sha */
+            compared_from_sha: string | null;
             /** Summary */
             summary: string | null;
+            /** Diagram */
+            diagram: string | null;
+            effort: components["schemas"]["EffortOut"];
             /** Findings */
             findings: components["schemas"]["FindingOut"][];
             /** Dropped Findings */
@@ -836,6 +1405,11 @@ export interface components {
             cost_usd: number;
             /** Latency Ms */
             latency_ms: number;
+            /** Tools */
+            tools: components["schemas"]["ToolRunOut"][] | null;
+            config: components["schemas"]["RepoConfigOut"] | null;
+            /** Check State */
+            check_state: string | null;
             /** Published At */
             published_at: string | null;
             /**
@@ -843,6 +1417,23 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /** ReviewQueueOut */
+        ReviewQueueOut: {
+            /** Total */
+            total: number;
+            /** P1 */
+            p1: number;
+            /** P2 */
+            p2: number;
+            /** P3 */
+            p3: number;
+            /** Total Minutes */
+            total_minutes: number;
+            /** Not Reviewed */
+            not_reviewed: number;
+            /** Items */
+            items: components["schemas"]["QueueItemOut"][];
         };
         /**
          * ReviewRunOut
@@ -853,6 +1444,10 @@ export interface components {
             id: number;
             /** Status */
             status: string;
+            /** Mode */
+            mode: string;
+            /** Base Review Id */
+            base_review_id: number | null;
             /** Model */
             model: string;
             /** Prompt Version */
@@ -873,6 +1468,8 @@ export interface components {
             findings_shown: number;
             /** Findings Dropped */
             findings_dropped: number;
+            /** Check State */
+            check_state: string | null;
             /** Published At */
             published_at: string | null;
             /**
@@ -880,6 +1477,18 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /** ReviewerOut */
+        ReviewerOut: {
+            /** Login */
+            login: string;
+            /** Files Touched */
+            files_touched: number;
+            /**
+             * Last Touched At
+             * Format: date-time
+             */
+            last_touched_at: string;
         };
         /** RiskFeaturesOut */
         RiskFeaturesOut: {
@@ -927,6 +1536,17 @@ export interface components {
              */
             computed_at: string;
         };
+        /** RiskOutcomeOut */
+        RiskOutcomeOut: {
+            /** Level */
+            level: string;
+            /** Closed */
+            closed: number;
+            /** Merged */
+            merged: number;
+            /** Merge Rate */
+            merge_rate: number | null;
+        };
         /** RiskReasonOut */
         RiskReasonOut: {
             /** Code */
@@ -950,6 +1570,77 @@ export interface components {
             score: number;
             /** Level */
             level: string;
+        };
+        /** ToolRunOut */
+        ToolRunOut: {
+            /** Name */
+            name: string;
+            /** Ran */
+            ran: boolean;
+            /** Findings */
+            findings: number;
+            /** Error */
+            error: string | null;
+            /** Duration Ms */
+            duration_ms: number;
+        };
+        /** ToolStatsOut */
+        ToolStatsOut: {
+            /** Name */
+            name: string;
+            /** Runs */
+            runs: number;
+            /** Findings */
+            findings: number;
+            /** Skipped */
+            skipped: number;
+        };
+        /** ToolsConfig */
+        ToolsConfig: {
+            /**
+             * Ruff
+             * @default true
+             */
+            ruff: boolean;
+            /**
+             * Semgrep
+             * @default true
+             */
+            semgrep: boolean;
+            /**
+             * Gitleaks
+             * @default true
+             */
+            gitleaks: boolean;
+        };
+        /** VotesOut */
+        VotesOut: {
+            /** Useful */
+            useful: number;
+            /** Not Useful */
+            not_useful: number;
+        };
+        /** WeekStatsOut */
+        WeekStatsOut: {
+            /**
+             * Week
+             * Format: date
+             */
+            week: string;
+            /** Reviews */
+            reviews: number;
+            /** Cost Usd */
+            cost_usd: number;
+            /** Proposed */
+            proposed: number;
+            /** Dropped */
+            dropped: number;
+            /** Shown */
+            shown: number;
+            /** Useful */
+            useful: number;
+            /** Not Useful */
+            not_useful: number;
         };
     };
     responses: never;
@@ -1456,6 +2147,73 @@ export interface operations {
             };
         };
     };
+    get_repository_config_repositories__repository_id__config_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepoConfigOut"];
+                };
+            };
+            /** @description Missing or invalid credentials: API key, or webhook signature */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The resource does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A parameter has the wrong type or value */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too many requests; wait for the time in the Retry-After header */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A dependency is unavailable; retry later */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     list_pull_requests_repositories__repository_id__pull_requests_get: {
         parameters: {
             query?: {
@@ -1710,7 +2468,9 @@ export interface operations {
     };
     queue_review_pull_requests__pull_request_id__review_post: {
         parameters: {
-            query?: never;
+            query?: {
+                mode?: "auto" | "full";
+            };
             header?: never;
             path: {
                 pull_request_id: number;
@@ -1855,6 +2615,576 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FeedbackOut"];
+                };
+            };
+            /** @description Missing or invalid credentials: API key, or webhook signature */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The resource does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A parameter has the wrong type or value */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too many requests; wait for the time in the Retry-After header */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_impact_pull_requests__pull_request_id__impact_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pull_request_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImpactOut"];
+                };
+            };
+            /** @description Missing or invalid credentials: API key, or webhook signature */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The resource does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A parameter has the wrong type or value */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too many requests; wait for the time in the Retry-After header */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A dependency is unavailable; retry later */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    chat_history_pull_requests__pull_request_id__chat_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pull_request_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatMessageOut"][];
+                };
+            };
+            /** @description Missing or invalid credentials: API key, or webhook signature */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The resource does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A parameter has the wrong type or value */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too many requests; wait for the time in the Retry-After header */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    ask_pull_requests__pull_request_id__chat_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pull_request_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatQuestionIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": unknown;
+                };
+            };
+            /** @description Missing or invalid credentials: API key, or webhook signature */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The resource does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A parameter has the wrong type or value */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too many requests; wait for the time in the Retry-After header */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A dependency is unavailable; retry later */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_learnings_repositories__repository_id__learnings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LearningOut"][];
+                };
+            };
+            /** @description Missing or invalid credentials: API key, or webhook signature */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The resource does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A parameter has the wrong type or value */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too many requests; wait for the time in the Retry-After header */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    add_learning_repositories__repository_id__learnings_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LearningIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LearningOut"];
+                };
+            };
+            /** @description Missing or invalid credentials: API key, or webhook signature */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The resource does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A parameter has the wrong type or value */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too many requests; wait for the time in the Retry-After header */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A dependency is unavailable; retry later */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_learning_learnings__learning_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                learning_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials: API key, or webhook signature */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The resource does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A parameter has the wrong type or value */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too many requests; wait for the time in the Retry-After header */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    change_learning_learnings__learning_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                learning_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LearningUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LearningOut"];
+                };
+            };
+            /** @description Missing or invalid credentials: API key, or webhook signature */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The resource does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A parameter has the wrong type or value */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too many requests; wait for the time in the Retry-After header */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A dependency is unavailable; retry later */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    review_queue_review_queue_get: {
+        parameters: {
+            query?: {
+                repository_id?: number | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewQueueOut"];
+                };
+            };
+            /** @description Missing or invalid credentials: API key, or webhook signature */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The resource does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A parameter has the wrong type or value */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too many requests; wait for the time in the Retry-After header */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    analytics_analytics_get: {
+        parameters: {
+            query?: {
+                repository_id?: number | null;
+                days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalyticsOut"];
                 };
             };
             /** @description Missing or invalid credentials: API key, or webhook signature */

@@ -10,6 +10,8 @@ const RepositoriesPage = lazy(() => import('./pages/RepositoriesPage').then((mod
 const RepositoryPage = lazy(() => import('./pages/RepositoryPage').then((module) => ({ default: module.RepositoryPage })))
 const PullRequestPage = lazy(() => import('./pages/PullRequestPage').then((module) => ({ default: module.PullRequestPage })))
 const JobsPage = lazy(() => import('./pages/JobsPage').then((module) => ({ default: module.JobsPage })))
+const ReviewQueuePage = lazy(() => import('./pages/ReviewQueuePage').then((module) => ({ default: module.ReviewQueuePage })))
+const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage').then((module) => ({ default: module.AnalyticsPage })))
 const SettingsPage = lazy(() => import('./pages/SettingsPage').then((module) => ({ default: module.SettingsPage })))
 
 export function App() {
@@ -21,6 +23,8 @@ export function App() {
           <Route path="/repositories" element={<RepositoriesPage />} />
           <Route path="/repositories/:repositoryId" element={<RepositoryPage />} />
           <Route path="/pull-requests/:pullRequestId" element={<PullRequestPage />} />
+          <Route path="/queue" element={<ReviewQueuePage />} />
+          <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/jobs" element={<JobsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<Empty title="Page not found" />} />

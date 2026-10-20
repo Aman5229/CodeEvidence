@@ -261,3 +261,24 @@ idempotency keys, so the state on GitHub itself is the source of truth.
 them through the production pipeline for free and fails when quality drops below fixed
 thresholds. A test breaks verification on purpose to prove the gate catches it.
 
+## Ten review features, kept honest (20 Oct 2026)
+
+**Every model output is still checked before anyone sees it.** One-click fixes must change
+only the flagged line and still parse; diagrams must use a safe subset of Mermaid and name
+code that is in the evidence; chat citations that do not exist are dropped. Checks found on
+real model output (a `"null"` fix, line breaks inside JSON strings, a fence on the keyword's
+line) became regression tests.
+
+**Settings and guidelines come from the default branch,** so a PR cannot loosen the rules it
+is reviewed by. **Learnings from GitHub need approval,** because anyone who can comment could
+write one; rules that switch off a whole category are refused.
+
+**Incremental reviews trust GitHub's compare API** and fall back to a full review whenever it
+cannot say exactly what changed (rebase, force-push, 300+ files, new prompt or model).
+
+**Static analysis runs as signals, not as comments:** tool output is evidence the model may
+cite, on added lines only, so the reviewer stays one voice and the tools' noise is filtered.
+
+**Chat streams with FastAPI's own server-sent events,** read with `fetch` in the dashboard
+(EventSource cannot POST). **Analytics count a finding once,** when the model raised it.
+

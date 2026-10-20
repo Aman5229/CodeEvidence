@@ -1,9 +1,11 @@
-import { ArrowUpRight, BarChart3, Bot, CheckCircle2, Database, GitPullRequest, Loader2, RefreshCw, Sparkles } from 'lucide-react'
+import { ArrowUpRight, BarChart3, Bot, CheckCircle2, Database, FileCog, GitPullRequest, GraduationCap, Loader2, RefreshCw, Sparkles } from 'lucide-react'
 import { motion } from 'motion/react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import type { Schemas } from '../api/client'
 import { useIndexStatus, useInsights, usePullRequests, useQueueIndex, useRepository, useRepositoryStats } from '../api/hooks'
 import { ShareBar } from '../components/charts/Charts'
+import { LearningsTab } from '../components/repository/LearningsTab'
+import { ReviewSettingsTab } from '../components/repository/ReviewSettingsTab'
 import { PullRequestState, RiskBadge } from '../components/ui/Badges'
 import { Avatar, Kpi } from '../components/ui/Kpi'
 import { Empty, ErrorMessage, Loading } from '../components/ui/States'
@@ -19,6 +21,8 @@ const TABS: TabSpec[] = [
   { id: 'pulls', label: 'Pull requests', icon: GitPullRequest },
   { id: 'insights', label: 'Insights', icon: BarChart3 },
   { id: 'index', label: 'Code index', icon: Database },
+  { id: 'learnings', label: 'Learnings', icon: GraduationCap },
+  { id: 'settings', label: 'Review settings', icon: FileCog },
 ]
 
 export function RepositoryPage() {
@@ -45,6 +49,8 @@ export function RepositoryPage() {
         {tab === 'pulls' && <PullRequestsTab repositoryId={repositoryId} />}
         {tab === 'insights' && <InsightsTab repositoryId={repositoryId} />}
         {tab === 'index' && <IndexTab repositoryId={repositoryId} />}
+        {tab === 'learnings' && <LearningsTab repositoryId={repositoryId} />}
+        {tab === 'settings' && <ReviewSettingsTab repositoryId={repositoryId} defaultBranch={repository.data?.default_branch} />}
       </TabPanel>
     </div>
   )

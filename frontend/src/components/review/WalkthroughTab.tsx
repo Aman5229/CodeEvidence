@@ -1,4 +1,4 @@
-import { Bot, Clock, Coins, Cpu, FileCode2, Map as MapIcon, ShieldCheck, Sparkles } from 'lucide-react'
+import { Bot, CheckCircle2, Clock, Coins, Cpu, FileCode2, GitCommitHorizontal, Map as MapIcon, Settings2, ShieldCheck, Sparkles, Timer, Workflow, XCircle } from 'lucide-react'
 import { motion } from 'motion/react'
 import type { Schemas } from '../../api/client'
 import { trackGlow } from '../../lib/glow'
@@ -9,6 +9,7 @@ import { RevealText } from '../motion/RevealText'
 import { RiskBadge, SeverityBadge } from '../ui/Badges'
 import { Empty } from '../ui/States'
 import { ChangeMap } from './ChangeMap'
+import { SequenceDiagram } from './SequenceDiagram'
 
 type Props = {
   pullRequest: Schemas['PullRequestDetailWithPatch']
@@ -18,8 +19,9 @@ type Props = {
   onRunReview: () => void
 }
 
-/** The overview of a PR: the AI summary, a table of what changed in each file, the top
- * findings and what the review cost. */
+/** The overview of a PR: the AI summary with the estimated review effort, a diagram of the
+ * changed flow, a table of what changed in each file, the top findings, the checks the review
+ * ran and what it cost. */
 export function WalkthroughTab({ pullRequest, review, risk, onOpenFile, onRunReview }: Props) {
   const findingsByFile = new Map<string, number>()
   for (const finding of review?.findings ?? []) {
@@ -36,6 +38,14 @@ export function WalkthroughTab({ pullRequest, review, risk, onOpenFile, onRunRev
           <span className="grow" />
           {review && (
             <>
+              <span className="badge accent" title="Estimated from the lines and files a person has to read">
+                <Timer size={12} aria-hidden="true" /> Review effort {review.effort.level}/5 · ~{review.effort.minutes} min
+              </span>
+              {review.mode === 'incremental' && review.compared_from_sha && (
+                <span className="badge info" title="Only the files changed since the last review were reviewed; findings on the other files were carried over">
+                  <GitCommitHorizontal size={12} aria-hidden="true" /> incremental since {review.compared_from_sha.slice(0, 7)}
+                </span>
+              )}
               <span className="badge outline"><Bot size={12} aria-hidden="true" /> {review.model}</span>
               <span className="badge outline">{review.prompt_version}</span>
             </>
@@ -56,6 +66,18 @@ export function WalkthroughTab({ pullRequest, review, risk, onOpenFile, onRunRev
           <div className="alert warn" style={{ marginTop: 12 }}>The review stopped early: it would have gone over its cost budget.</div>
         )}
       </motion.section>
+
+      {review?.diagram && (
+        <motion.section variants={item} className="card" aria-labelledby="diagram-title">
+          <div className="card-header">
+            <h2 id="diagram-title" className="row"><Workflow size={15} aria-hidden="true" /> Sequence diagram</h2>
+            <span className="muted small">the flow this change touches, drawn from its code</span>
+          </div>
+          <div className="card-body">
+            <SequenceDiagram source={review.diagram} />
+          </div>
+        </motion.section>
+      )}
 
       <motion.section variants={item} className="card" aria-labelledby="map-title">
         <div className="card-header">
@@ -109,6 +131,8 @@ export function WalkthroughTab({ pullRequest, review, risk, onOpenFile, onRunRev
             )}
           </div>
         </section>
+
+        {review && <ChecksCard review={review} />}
       </motion.div>
 
       <motion.section variants={item} className="card" aria-labelledby="changes-title">
@@ -150,6 +174,54 @@ export function WalkthroughTab({ pullRequest, review, risk, onOpenFile, onRunRev
         </table>
       </motion.section>
     </motion.div>
+  )
+}
+
+/** What the review checked besides the model: the merge check posted to GitHub, the static
+ * analysis tools, and the repository settings it applied. */
+function ChecksCard({ review }: { review: Schemas['ReviewOut'] }) {
+  const config = review.config
+  return (
+    <section className="card glow" onPointerMove={trackGlow} aria-labelledby="checks-title">
+      <div className="card-header">
+        <h2 id="checks-title" className="row"><ShieldCheck size={15} aria-hidden="true" /> Checks and settings</h2>
+      </div>
+      <div className="card-body stack" style={{ gap: 10 }}>
+        <div className="row">
+          <span className="grow">Merge check on GitHub</span>
+          {review.check_state === 'success' && <span className="badge low"><CheckCircle2 size={12} aria-hidden="true" /> passing</span>}
+          {review.check_state === 'failure' && <span className="badge high"><XCircle size={12} aria-hidden="true" /> blocking</span>}
+          {!review.check_state && <span className="muted small">{review.published_at ? 'not set (no permission)' : 'not published'}</span>}
+        </div>
+        <div className="row wrap">
+          <span className="grow">Static analysis</span>
+          {review.tools === null ? (
+            <span className="muted small">off on this server</span>
+          ) : review.tools.length === 0 ? (
+            <span className="muted small">turned off in the settings</span>
+          ) : (
+            review.tools.map((tool) => (
+              <span key={tool.name} className={`badge ${tool.ran ? (tool.findings ? 'medium' : 'low') : 'outline'}`} title={tool.error ?? `${tool.findings} on added lines, ${tool.duration_ms} ms`}>
+                {tool.name} {tool.ran ? `· ${tool.findings}` : '· skipped'}
+              </span>
+            ))
+          )}
+        </div>
+        <div className="row">
+          <Settings2 size={14} aria-hidden="true" className="muted" />
+          <span className="grow">Settings</span>
+          {config ? (
+            <span className="small">
+              {config.source === 'file' ? <code>.codeevidence.yaml</code> : 'defaults'} · {config.profile}
+              {config.guideline_files.length > 0 && ` · ${config.guideline_files.join(', ')}`}
+            </span>
+          ) : (
+            <span className="muted small">—</span>
+          )}
+        </div>
+        {config?.error && <div className="alert warn small">.codeevidence.yaml was not used: {config.error}</div>}
+      </div>
+    </section>
   )
 }
 

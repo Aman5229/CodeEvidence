@@ -86,8 +86,10 @@ calls, no cost, fully deterministic. The gate fails CI when a metric drops below
 | `hallucinations_caught` (not_grounded findings the verifier dropped) | 90% |
 
 **Proof the gate works:** a test breaks verification on purpose (keeps every finding) and
-asserts that the gate fails. Replay tests the code (verification, ranking, parsing), not the
-model: a new model or prompt needs new recordings.
+asserts that the gate fails. Replays rank with the `assertive` profile: the default `chill`
+profile leaves out low-severity findings, which would hide small mistakes from the gate.
+Replay tests the code (verification, ranking, parsing), not the model: a new model or prompt
+needs new recordings (the three current cases were recorded with `review_v1`).
 
 ## 6. Quality report
 

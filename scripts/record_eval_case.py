@@ -16,7 +16,7 @@ from app.db.models import PullRequest, PullRequestRisk
 from app.db.session import SessionLocal
 from app.integrations.github.client import get_github_client
 from app.modules.code.embeddings import get_embedder
-from app.modules.code.evidence import collect_evidence
+from app.modules.code.evidence import EvidenceOptions, collect_evidence
 from app.modules.review.findings import parse_findings
 from app.modules.review.llm import CostMeter, LLMResponse, get_llm
 from app.modules.review.pipeline import run_pipeline
@@ -39,11 +39,12 @@ async def record(pull_request_id: int, name: str) -> Path:
     pull_request = db.get(PullRequest, pull_request_id)
     if pull_request is None:
       raise SystemExit(f"Pull request {pull_request_id} does not exist")
-    bundle = await collect_evidence(db, get_github_client(), get_embedder(), pull_request)
+    options = EvidenceOptions(budget=settings.review_token_budget)
+    bundle = (await collect_evidence(db, get_github_client(), get_embedder(), pull_request, options)).bundle
     risk = db.get(PullRequestRisk, pull_request_id)
   recorder = RecordingLLM(get_llm())
   meter = CostMeter(recorder, settings.review_budget_usd)
-  result = run_pipeline(meter, bundle, risk.level if risk else None)
+  result = run_pipeline(meter, bundle, risk.level if risk else None)  # findings, then the summary
 
   proposed = []
   for answer in recorder.answers[:-1]:  # the last answer is the summary

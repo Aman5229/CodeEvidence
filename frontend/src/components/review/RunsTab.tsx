@@ -5,7 +5,8 @@ import { formatDuration, formatNumber, formatUsd, timeAgo } from '../../lib/form
 import { item, list } from '../../lib/motion'
 import { Empty, Loading } from '../ui/States'
 
-/** Every review run of this PR: what model and prompt, what it cost, what it found. */
+/** Every review run of this PR: full or incremental, what model and prompt, what it cost,
+ * what it found, and the merge check it posted. */
 export function RunsTab({ runs, loading }: { runs: Schemas['ReviewRunOut'][] | undefined; loading: boolean }) {
   if (loading) return <Loading what="review runs" />
   if (!runs?.length) return <Empty icon={History} title="No review runs yet" />
@@ -30,7 +31,13 @@ export function RunsTab({ runs, loading }: { runs: Schemas['ReviewRunOut'][] | u
               <td className="mono">#{run.id}</td>
               <td>
                 <span className={`badge ${run.status === 'completed' ? 'low' : 'medium'}`}>{run.status}</span>{' '}
-                {run.cached && <span className="badge info">cached</span>}
+                {run.cached && <span className="badge info">cached</span>}{' '}
+                {run.mode === 'incremental' ? (
+                  <span className="badge accent" title={run.base_review_id ? `Builds on review #${run.base_review_id}` : undefined}>incremental</span>
+                ) : (
+                  <span className="badge outline">full</span>
+                )}{' '}
+                {run.check_state && <span className={`badge ${run.check_state === 'success' ? 'low' : 'high'}`}>check {run.check_state}</span>}
               </td>
               <td className="small">{run.model}<br /><span className="muted">{run.prompt_version}</span></td>
               <td>{run.findings_shown} shown <span className="muted small">· {run.findings_dropped} dropped</span></td>

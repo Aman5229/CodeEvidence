@@ -45,6 +45,18 @@ def error_responses(*status_codes: int) -> dict[int, dict]:
   }
 
 
+def json_error_responses(*status_codes: int) -> dict[int, dict]:
+  """Like error_responses, for routes whose success is not JSON (server-sent events): FastAPI
+  would document their errors with the route's media type, but errors are always JSON."""
+  return {
+    code: {
+      "description": ERROR_DESCRIPTIONS[code],
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}},
+    }
+    for code in status_codes
+  }
+
+
 def error_response(
   status_code: int, message: str, headers: dict[str, str] | None = None
 ) -> JSONResponse:

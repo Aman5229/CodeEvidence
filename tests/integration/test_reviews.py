@@ -59,7 +59,9 @@ def test_review_returns_verified_findings_with_their_evidence(client, worker, fa
   assert [(f["rank"], f["line"], f["quote"]) for f in body["findings"]] == [(1, 3, "return eval(item_id)")]
   assert body["dropped_findings"] == 1  # the invented os.system finding
   assert [item["id"] for item in body["findings"][0]["evidence"]] == ["H1", "S1"]
-  assert body["llm_calls"] == 2 and body["cost_usd"] > 0 and not body["cached"]
+  # findings, summary, diagram (the fake answers the diagram with the summary: not a diagram)
+  assert body["llm_calls"] == 3 and body["cost_usd"] > 0 and not body["cached"]
+  assert body["diagram"] is None and body["mode"] == "full"
 
 
 def test_the_enclosing_function_is_part_of_the_evidence(client, worker, fake_llm, pull_request_id):
@@ -80,6 +82,18 @@ def test_same_diff_again_is_a_cache_hit_with_no_llm_call(client, db_session, wor
   assert body["cached"] and body["llm_calls"] == 0 and body["cost_usd"] == 0
   assert [f["quote"] for f in body["findings"]] == ["return eval(item_id)"]
   assert db_session.scalar(select(func.count()).select_from(Review)) == 2
+
+
+def test_an_unreadable_answer_is_not_reused(client, worker, fake_llm, pull_request_id):
+  fake_llm.answers = ["not json", "still not json", "Summary of handler.py.", "NONE"]
+  first = run_review(client, worker, pull_request_id)
+  fake_llm.answers = [answers(FINDING), "Summary of handler.py.", "NONE"]
+  fake_llm.calls.clear()
+
+  again = run_review(client, worker, pull_request_id)
+
+  assert first["findings"] == [] and not again["cached"]
+  assert [f["quote"] for f in again["findings"]] == ["return eval(item_id)"]
 
 
 def test_budget_exceeded_stops_cleanly_and_is_not_cached(client, worker, fake_llm, pull_request_id, monkeypatch):

@@ -9,9 +9,11 @@ Like the GitHub client, a provider makes one attempt per call. Retries, pauses a
 circuit breaker live in the job layer (LLMGuard reuses the GitHub guard's mechanisms).
 """
 
+import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from contextlib import contextmanager
 from functools import lru_cache
 from typing import Protocol
 
@@ -32,10 +34,18 @@ class LLMResponse:
   latency_ms: int
 
 
+# A conversation for chat: [{"role": "user" | "assistant", "content": "..."}], oldest first
+Messages = list[dict[str, str]]
+# What streaming yields: pieces of text as they arrive, then one LLMResponse with the totals
+StreamChunk = str | LLMResponse
+
+
 class LLMProvider(Protocol):
   model: str
 
   def complete(self, system: str, user: str, max_tokens: int) -> LLMResponse: ...
+
+  def stream(self, system: str, messages: Messages, max_tokens: int) -> Iterator[StreamChunk]: ...
 
 
 class LLMError(Exception):
@@ -70,22 +80,14 @@ class AnthropicProvider:
     self._client = anthropic.Anthropic(api_key=api_key, timeout=TIMEOUT_SECONDS, max_retries=0)
 
   def complete(self, system: str, user: str, max_tokens: int) -> LLMResponse:
-    errors = self._anthropic
     started = time.perf_counter()
-    try:
+    with self._errors():
       message = self._client.messages.create(
         model=self.model,
         max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": user}],
       )
-    except errors.RateLimitError as error:
-      retry_after = error.response.headers.get("retry-after")
-      raise LLMError(str(error), transient=True, retry_after=float(retry_after) if retry_after else 30.0) from error
-    except (errors.APIConnectionError, errors.InternalServerError) as error:  # incl. timeouts, 5xx, overloaded
-      raise LLMError(str(error), transient=True) from error
-    except errors.APIStatusError as error:  # bad request, auth, not found: retrying will not help
-      raise LLMError(str(error), transient=False) from error
     text = "".join(block.text for block in message.content if block.type == "text")
     return LLMResponse(
       text=text,
@@ -93,6 +95,35 @@ class AnthropicProvider:
       output_tokens=message.usage.output_tokens,
       latency_ms=round((time.perf_counter() - started) * 1000),
     )
+
+  def stream(self, system: str, messages: Messages, max_tokens: int) -> Iterator[StreamChunk]:
+    started = time.perf_counter()
+    with self._errors():
+      with self._client.messages.stream(
+        model=self.model, max_tokens=max_tokens, system=system, messages=messages
+      ) as stream:
+        yield from stream.text_stream
+        message = stream.get_final_message()
+    yield LLMResponse(
+      text="".join(block.text for block in message.content if block.type == "text"),
+      input_tokens=message.usage.input_tokens,
+      output_tokens=message.usage.output_tokens,
+      latency_ms=round((time.perf_counter() - started) * 1000),
+    )
+
+  @contextmanager
+  def _errors(self):
+    """The SDK's errors as LLMError: transient (worth retrying) or not."""
+    errors = self._anthropic
+    try:
+      yield
+    except errors.RateLimitError as error:
+      retry_after = error.response.headers.get("retry-after")
+      raise LLMError(str(error), transient=True, retry_after=float(retry_after) if retry_after else 30.0) from error
+    except (errors.APIConnectionError, errors.InternalServerError) as error:  # incl. timeouts, 5xx, overloaded
+      raise LLMError(str(error), transient=True) from error
+    except errors.APIStatusError as error:  # bad request, auth, not found: retrying will not help
+      raise LLMError(str(error), transient=False) from error
 
 
 class OpenAICompatibleProvider:
@@ -118,14 +149,7 @@ class OpenAICompatibleProvider:
         response = client.post(self._url, json=body, headers=self._headers)
     except httpx.TransportError as error:  # not running, connection refused, timeout
       raise LLMError(f"Cannot reach the LLM at {self._url}: {error}", transient=True) from error
-    if response.status_code == 429:
-      retry_after = response.headers.get("retry-after")
-      raise LLMError("LLM rate limit", transient=True, retry_after=float(retry_after) if retry_after else 30.0)
-    if response.status_code >= 400:
-      raise LLMError(
-        f"LLM answered {response.status_code}: {response.text[:300]}",
-        transient=response.status_code in RETRYABLE_STATUS_CODES,
-      )
+    self._raise_for_status(response.status_code, response.headers, response.text)
     answer = response.json()
     usage = answer.get("usage") or {}
     text = answer["choices"][0]["message"]["content"] or ""
@@ -135,6 +159,55 @@ class OpenAICompatibleProvider:
       output_tokens=usage.get("completion_tokens", len(text) // 4),
       latency_ms=round((time.perf_counter() - started) * 1000),
     )
+
+  def stream(self, system: str, messages: Messages, max_tokens: int) -> Iterator[StreamChunk]:
+    """Server-sent events: `data: {json}` lines, each with a piece of text, then `data: [DONE]`."""
+    started = time.perf_counter()
+    body = {
+      "model": self.model,
+      "max_tokens": max_tokens,
+      "stream": True,
+      "stream_options": {"include_usage": True},
+      "messages": [{"role": "system", "content": system}, *messages],
+    }
+    pieces: list[str] = []
+    usage: dict = {}
+    try:
+      with httpx.Client(timeout=LOCAL_TIMEOUT_SECONDS, transport=self._transport) as client:
+        with client.stream("POST", self._url, json=body, headers=self._headers) as response:
+          if response.status_code >= 400:
+            self._raise_for_status(response.status_code, response.headers, response.read().decode(errors="replace"))
+          for line in response.iter_lines():
+            if not line.startswith("data:"):
+              continue
+            data = line[len("data:"):].strip()
+            if data == "[DONE]":
+              break
+            event = json.loads(data)
+            usage = event.get("usage") or usage
+            for choice in event.get("choices") or []:
+              piece = (choice.get("delta") or {}).get("content")
+              if piece:
+                pieces.append(piece)
+                yield piece
+    except httpx.TransportError as error:
+      raise LLMError(f"Cannot reach the LLM at {self._url}: {error}", transient=True) from error
+    text = "".join(pieces)
+    prompt_chars = len(system) + sum(len(message["content"]) for message in messages)
+    yield LLMResponse(
+      text=text,
+      input_tokens=usage.get("prompt_tokens", prompt_chars // 4),
+      output_tokens=usage.get("completion_tokens", len(text) // 4),
+      latency_ms=round((time.perf_counter() - started) * 1000),
+    )
+
+  @staticmethod
+  def _raise_for_status(status: int, headers: httpx.Headers, text: str) -> None:
+    if status == 429:
+      retry_after = headers.get("retry-after")
+      raise LLMError("LLM rate limit", transient=True, retry_after=float(retry_after) if retry_after else 30.0)
+    if status >= 400:
+      raise LLMError(f"LLM answered {status}: {text[:300]}", transient=status in RETRYABLE_STATUS_CODES)
 
 
 class FakeLLM:
@@ -153,6 +226,14 @@ class FakeLLM:
     else:
       text = self.answers[min(len(self.calls), len(self.answers)) - 1]
     return LLMResponse(text=text, input_tokens=(len(system) + len(user)) // 4, output_tokens=len(text) // 4, latency_ms=0)
+
+  def stream(self, system: str, messages: Messages, max_tokens: int) -> Iterator[StreamChunk]:
+    """The same answer as complete() for the last message, sent word by word."""
+    response = self.complete(system, messages[-1]["content"], max_tokens)
+    words = response.text.split(" ")
+    for index, word in enumerate(words):
+      yield word if index == len(words) - 1 else word + " "
+    yield response
 
 
 @lru_cache(maxsize=1)
@@ -186,18 +267,32 @@ class CostMeter:
     self.cost_usd = 0.0
 
   def complete(self, system: str, user: str, max_tokens: int) -> LLMResponse:
-    worst_case = cost_usd((len(system) + len(user)) // 4 + 1, max_tokens)
+    self._check(cost_usd((len(system) + len(user)) // 4 + 1, max_tokens))
+    response = self.llm.complete(system, user, max_tokens)
+    self._count(response)
+    return response
+
+  def stream(self, system: str, messages: Messages, max_tokens: int) -> Iterator[StreamChunk]:
+    """Like complete(), streaming: the budget is checked before the first piece of text."""
+    prompt = len(system) + sum(len(message["content"]) for message in messages)
+    self._check(cost_usd(prompt // 4 + 1, max_tokens))
+    for chunk in self.llm.stream(system, messages, max_tokens):
+      if isinstance(chunk, LLMResponse):
+        self._count(chunk)
+      yield chunk
+
+  def _check(self, worst_case: float) -> None:
     if self.cost_usd + worst_case > self.budget_usd:
       raise BudgetExceeded(
         f"Next call could cost ${worst_case:.4f}; ${self.cost_usd:.4f} of ${self.budget_usd:.2f} already spent"
       )
-    response = self.llm.complete(system, user, max_tokens)
+
+  def _count(self, response: LLMResponse) -> None:
     self.calls += 1
     self.input_tokens += response.input_tokens
     self.output_tokens += response.output_tokens
     self.latency_ms += response.latency_ms
     self.cost_usd += cost_usd(response.input_tokens, response.output_tokens)
-    return response
 
 
 class LLMGuard(GitHubGuard):

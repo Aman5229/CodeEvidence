@@ -3,13 +3,17 @@ import type { Schemas } from '../api/client'
 export const FINDING: Schemas['FindingOut'] = {
   id: 11, rank: 1, path: 'app/handler.py', line: 3, severity: 'high', category: 'security',
   claim: 'eval runs request data as code.', quote: 'return eval(item_id)', suggestion: 'Use int(item_id).',
-  confidence: 0.9, github_comment_id: null,
+  replacement: '    return int(item_id)', original_line: '    return eval(item_id)',
+  agent_prompt: 'In `app/handler.py` at line 3: eval runs request data as code.',
+  confidence: 0.9, github_comment_id: null, carried_from_review_id: null,
   evidence: [{ id: 'H1', kind: 'hunk', path: 'app/handler.py', start_line: 1, end_line: 3, text: '+    return eval(item_id)' }],
   feedback: { useful: 2, not_useful: 0, replies: 0 },
 }
 
 export const REVIEW: Schemas['ReviewOut'] = {
-  id: 1, pull_request_id: 7, head_sha: 'b'.repeat(40), status: 'completed', summary: 'Evaluates the request id.',
+  id: 1, pull_request_id: 7, pull_request_url: 'https://github.com/octo/demo/pull/42', head_sha: 'b'.repeat(40),
+  status: 'completed', mode: 'full', base_review_id: null, compared_from_sha: null, summary: 'Evaluates the request id.',
+  diagram: null, effort: { level: 1, minutes: 5 }, tools: null, config: null, check_state: null,
   findings: [FINDING, { ...FINDING, id: 12, severity: 'low', category: 'maintainability', line: 2, claim: 'Name is unclear here.', quote: 'item_id = request.args["id"]' }],
   dropped_findings: 1,
   evidence: [
